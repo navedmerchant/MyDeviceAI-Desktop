@@ -123,18 +123,212 @@ function createP2PCFClient(roomId: string): any {
     });
   });
 
+  // Minimal binary-safe JSON protocol over P2PCF:
+  // All control/messages are UTF-8 JSON strings with field "t" (type).
+  //
+  // Types:
+  // - "hello": sent by both sides on connect.
+  //     { "t": "hello", "clientId": string, "impl": "mydeviceai-desktop", "version": string }
+  //
+  // - "prompt": remote peer -> this app
+  //     { "t": "prompt", "id": string, "prompt": string, "max_tokens"?: number }
+  //
+  // Streaming response from this app -> remote peer:
+  // - "start": once per prompt before any tokens
+  //     { "t": "start", "id": string }
+  // - "token": many per prompt
+  //     { "t": "token", "id": string, "tok": string }
+  // - "end": final success
+  //     { "t": "end", "id": string }
+  // - "error": final failure
+  //     { "t": "error", "id": string, "message": string }
+  //
+  // Unknown or malformed messages are ignored but logged.
+  //
+  // NOTE: Actual llama integration is delegated to window.llama.ensureServer()
+  // and HTTP calls; if unavailable, we respond with an error.
+
+  type P2PMessage =
+    | { t: 'hello'; clientId: string; impl: string; version: string }
+    | { t: 'prompt'; id: string; prompt: string; max_tokens?: number }
+    | { t: 'start'; id: string }
+    | { t: 'token'; id: string; tok: string }
+    | { t: 'end'; id: string }
+    | { t: 'error'; id: string; message: string }
+    | { t: string; [k: string]: any };
+
+  async function sendJsonSafe(peer: any, msg: P2PMessage): Promise<void> {
+    try {
+      const raw = JSON.stringify(msg);
+      peer.send(raw);
+    } catch (err) {
+      logRendererError('Failed to send P2PCF JSON message', err as Error, {
+        msg,
+      });
+    }
+  }
+
+  async function handlePromptRequest(peer: any, msg: any): Promise<void> {
+    const id = typeof msg.id === 'string' ? msg.id : '';
+    const prompt = typeof msg.prompt === 'string' ? msg.prompt : '';
+    const maxTokens =
+      typeof msg.max_tokens === 'number' && msg.max_tokens > 0
+        ? msg.max_tokens
+        : 512;
+
+    if (!id || !prompt) {
+      logRendererError('Invalid prompt message; missing id or prompt', undefined, {
+        msg,
+      });
+      if (id) {
+        await sendJsonSafe(peer, {
+          t: 'error',
+          id,
+          message: 'Invalid prompt: missing prompt text',
+        });
+      }
+      return;
+    }
+
+    if (!window.llama?.stream) {
+      await sendJsonSafe(peer, {
+        t: 'error',
+        id,
+        message: 'Llama streaming API not available in preload bridge',
+      });
+      return;
+    }
+
+    await sendJsonSafe(peer, { t: 'start', id });
+
+    try {
+      // Use the preload-exposed streaming helper to keep HTTP/Electron details
+      // out of the renderer. This relies on src/preload.ts: window.llama.stream().
+      logRenderer('Dispatching prompt via llama.stream bridge', {
+        id,
+        maxTokens,
+      });
+
+      // llama.stream is an async generator of { raw, json, token?, done? }.
+      // We forward any extracted token text as "token" messages.
+      // If no token field is present, we fall back to raw.
+      const stream = window.llama.stream(prompt, {
+        max_tokens: maxTokens,
+      }) as AsyncGenerator<
+        { raw: string; json: any | null; token?: string; done?: boolean },
+        void,
+        unknown
+      >;
+
+      for await (const chunk of stream) {
+        const tok =
+          (chunk.token && String(chunk.token)) ||
+          (typeof chunk.raw === 'string' ? chunk.raw : '');
+
+        if (tok) {
+          await sendJsonSafe(peer, {
+            t: 'token',
+            id,
+            tok,
+          });
+        }
+
+        if (chunk.done) {
+          break;
+        }
+      }
+
+      await sendJsonSafe(peer, { t: 'end', id });
+    } catch (err) {
+      logRendererError('Error while streaming llama completion via bridge', err as Error, {
+        id,
+      });
+      await sendJsonSafe(peer, {
+        t: 'error',
+        id,
+        message:
+          (err as Error)?.message ||
+          'Unknown error during completion via llama bridge',
+      });
+    }
+  }
+
   p2pcf.on('msg', (peer: any, data: any) => {
-    logRenderer('Message from peer', {
+    const meta = {
       id: peer?.id,
       client_id: peer?.client_id,
-      // Avoid logging full binary payloads; just type/size.
-      dataType: typeof data,
-      length:
-        typeof data === 'string' || Array.isArray(data)
-          ? (data as any).length
-          : undefined,
-    });
-    // Later: integrate with llama API, e.g. forward prompts/results
+    };
+
+    try {
+      const asString =
+        typeof data === 'string'
+          ? data
+          : data instanceof ArrayBuffer
+          ? new TextDecoder().decode(new Uint8Array(data))
+          : ArrayBuffer.isView(data)
+          ? new TextDecoder().decode(
+              data.buffer instanceof ArrayBuffer
+                ? new Uint8Array(data.buffer)
+                : new Uint8Array(data as any),
+            )
+          : null;
+
+      if (!asString) {
+        logRendererError('Received unsupported P2PCF msg payload', undefined, {
+          ...meta,
+          dataType: typeof data,
+        });
+        return;
+      }
+
+      let msg: P2PMessage;
+      try {
+        msg = JSON.parse(asString);
+      } catch (parseErr) {
+        logRendererError('Failed to parse P2PCF msg as JSON', parseErr as Error, {
+          ...meta,
+          raw: asString.slice(0, 256),
+        });
+        return;
+      }
+
+      if (!msg || typeof msg.t !== 'string') {
+        logRendererError('Received JSON without type field "t"', undefined, {
+          ...meta,
+          msg,
+        });
+        return;
+      }
+
+      switch (msg.t) {
+        case 'hello':
+          logRenderer('Received hello from peer', {
+            ...meta,
+            clientId: msg.clientId,
+            impl: msg.impl,
+            version: msg.version,
+          });
+          break;
+
+        case 'prompt':
+          logRenderer('Received prompt over P2PCF', {
+            ...meta,
+            id: msg.id,
+            promptLen:
+              typeof msg.prompt === 'string' ? msg.prompt.length : undefined,
+          });
+          void handlePromptRequest(peer, msg);
+          break;
+
+        default:
+          logRenderer('Ignoring unknown P2PCF msg type', {
+            ...meta,
+            t: msg.t,
+          });
+      }
+    } catch (err) {
+      logRendererError('Unhandled error in P2PCF msg handler', err as Error, meta);
+    }
   });
 
   // Start polling after listeners are attached
@@ -147,12 +341,68 @@ function createP2PCFClient(roomId: string): any {
 declare global {
   interface Window {
     llama?: {
+      // Streaming chat completion helper from src/preload.ts
+      stream?: (
+        prompt: string,
+        opts?: {
+          model?: string;
+          temperature?: number;
+          max_tokens?: number;
+          endpoint?: string;
+          messages?: Array<{
+            role: 'system' | 'user' | 'assistant';
+            content: string;
+          }>;
+        },
+      ) => AsyncGenerator<
+        {
+          raw: string;
+          json: any | null;
+          token?: string;
+          done?: boolean;
+        },
+        void,
+        unknown
+      >;
+
+      // Non-streaming helper (kept for completeness)
+      query?: (
+        prompt: string,
+        opts?: {
+          model?: string;
+          temperature?: number;
+          max_tokens?: number;
+          messages?: Array<{
+            role: 'system' | 'user' | 'assistant';
+            content: string;
+          }>;
+          endpoint?: string;
+        },
+      ) => Promise<{
+        id?: string;
+        object?: string;
+        created?: number;
+        model?: string;
+        choices: Array<{
+          index: number;
+          message: { role: 'system' | 'user' | 'assistant'; content: string };
+          finish_reason: string | null;
+        }>;
+      }>;
+
+      getStatus?: () => Promise<{
+        ok: boolean;
+        endpoint: string;
+        error?: string;
+      }>;
+
       getInstallStatus?: () => Promise<{
         installed: boolean;
         version?: string;
         binaryPath?: string;
         error?: string;
       }>;
+
       installLatest?: (
         onProgress?: (p: {
           type:
@@ -176,6 +426,7 @@ declare global {
         binaryPath?: string;
         error?: string;
       }>;
+
       ensureServer?: () => Promise<{
         ok: boolean;
         endpoint?: string;

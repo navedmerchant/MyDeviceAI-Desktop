@@ -548,7 +548,7 @@ function checkPortAvailable(port: number): Promise<boolean> {
       });
     });
 
-    server.listen(port, '127.0.0.1');
+    server.listen(port, 'localhost');
   });
 }
 
@@ -593,7 +593,7 @@ async function spawnLlamaServer(binaryPath: string, modelPath: string): Promise<
 
   const args = [
     '--host',
-    '127.0.0.1',
+    'localhost',
     '--port',
     String(port),
     '--model',
@@ -686,7 +686,7 @@ export async function ensureLlamaServer(
 
   try {
     const { port } = await spawnLlamaServer(install.binaryPath, modelPath);
-    const endpoint = `http://127.0.0.1:${port}`;
+    const endpoint = `http://localhost:${port}`;
     logDebug('llama-server started successfully', {
       endpoint,
       modelPath,

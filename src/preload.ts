@@ -86,7 +86,7 @@ type LlamaStreamChunk = {
   done?: boolean;
 };
 
-const DEFAULT_LLAMA_ENDPOINT = 'http://localhost:8080';
+const DEFAULT_LLAMA_ENDPOINT = 'http:/localhost:8080';
 
 type LlamaInstallStatus = {
   installed: boolean;
@@ -126,7 +126,18 @@ async function llamaQuery(
     extraMessages: opts.messages?.length ?? 0,
   });
   const endpoint =
-    (opts as any).endpoint || `${DEFAULT_LLAMA_ENDPOINT}/v1/chat/completions`;
+    (opts as any).endpoint || (
+      await ipcRenderer
+        .invoke('llama-server-get-endpoint')
+        .then((res: any) =>
+          res && res.ok && res.endpoint
+            ? `${res.endpoint}/v1/chat/completions`
+            : `${DEFAULT_LLAMA_ENDPOINT}/v1/chat/completions`,
+        )
+        .catch(() => `${DEFAULT_LLAMA_ENDPOINT}/v1/chat/completions`)
+    );
+
+  logPreload('llama.query resolved endpoint', { endpoint });
 
   const body: LlamaChatCompletionRequest = {
     model: opts.model || 'local-model',
@@ -204,7 +215,18 @@ async function* llamaStream(
   opts: Partial<LlamaChatCompletionRequest & { endpoint?: string }> = {},
 ): AsyncGenerator<LlamaStreamChunk, void, unknown> {
   const endpoint =
-    opts.endpoint || `${DEFAULT_LLAMA_ENDPOINT}/v1/chat/completions`;
+    opts.endpoint || (
+      await ipcRenderer
+        .invoke('llama-server-get-endpoint')
+        .then((res: any) =>
+          res && res.ok && res.endpoint
+            ? `${res.endpoint}/v1/chat/completions`
+            : `${DEFAULT_LLAMA_ENDPOINT}/v1/chat/completions`,
+        )
+        .catch(() => `${DEFAULT_LLAMA_ENDPOINT}/v1/chat/completions`)
+    );
+
+  logPreload('llama.stream resolved endpoint', { endpoint });
 
   const body: any = {
     model: opts.model || 'local-model',
