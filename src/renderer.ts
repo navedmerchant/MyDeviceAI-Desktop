@@ -36,8 +36,8 @@ console.log(
 // @ts-ignore
 import P2PCF from 'p2pcf';
 
-const client_id = 'MyUsername';
-const room_id = 'MyRoom';
+const client_id = 'client';
+const room_id = '1234';
 
 const p2pcf = new P2PCF(client_id, room_id);
 
@@ -57,6 +57,8 @@ p2pcf.on('peerconnect', (peer: any) => {
   
   peer.on('track', (track: any, stream: any) => {
     // New media track + stream from peer
+      console.log("track");
+
   });
   
   // Add a media stream to the peer to start sending it
@@ -66,10 +68,12 @@ p2pcf.on('peerconnect', (peer: any) => {
 
 p2pcf.on('peerclose', (peer: any) => {
   // Peer has disconnected
+  console.log("peer disconnected")
 });
 
 p2pcf.on('msg', (peer: any, data: any) => {
   // Received data from peer (data is an ArrayBuffer)
+  console.log(`message peer ${peer} data ${data}`)
 });
 
 // Broadcast a message via data channel to all peers
