@@ -12,6 +12,29 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
 
+const LOG_PREFIX = '[LlamaSetup]';
+
+function logDebug(message: string, extra?: Record<string, unknown>): void {
+  if (extra) {
+    // eslint-disable-next-line no-console
+    console.log(`${LOG_PREFIX} ${message}`, extra);
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(`${LOG_PREFIX} ${message}`);
+  }
+}
+
+function logError(message: string, error?: unknown, extra?: Record<string, unknown>): void {
+  // eslint-disable-next-line no-console
+  console.error(`${LOG_PREFIX} ${message}`, {
+    error:
+      error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : error,
+    ...extra,
+  });
+}
+
 export type LlamaInstallStatus = {
   installed: boolean;
   version?: string;
@@ -31,8 +54,19 @@ const OWNER = 'ggml-org';
 const REPO = 'llama.cpp';
 const RELEASES_API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
 
-const INSTALL_DIR = path.join(app.getPath('userData'), 'llama', 'bin');
-const METADATA_FILE = path.join(app.getPath('userData'), 'llama', 'install.json');
+// Qwen3-4B GGUF (default model)
+const QWEN3_MODEL_URL =
+  'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf?download=1';
+
+const INSTALL_ROOT = path.join(app.getPath('userData'), 'llama');
+const INSTALL_DIR = path.join(INSTALL_ROOT, 'bin');
+const METADATA_FILE = path.join(INSTALL_ROOT, 'install.json');
+const MODEL_DIR = path.join(INSTALL_ROOT, 'models');
+const QWEN3_MODEL_PATH = path.join(MODEL_DIR, 'Qwen3-4B-Q4_K_M.gguf');
+
+
+let llamaServerProcess: import('child_process').ChildProcessWithoutNullStreams | null = null;
+let llamaServerPort: number | null = null;
 
 type Platform = 'windows' | 'linux' | 'macos';
 type Arch = 'x64' | 'arm64';
@@ -63,29 +97,45 @@ function getArch(): Arch | null {
 
 function ensureDirSync(dir: string) {
   if (!fs.existsSync(dir)) {
+    logDebug('Creating directory', { dir });
     fs.mkdirSync(dir, { recursive: true });
+  } else {
+    logDebug('Directory already exists', { dir });
   }
 }
 
 function readInstallMetadata(): LlamaInstallStatus {
   try {
+    logDebug('Reading install metadata', { METADATA_FILE });
     const raw = fs.readFileSync(METADATA_FILE, 'utf8');
     const data = JSON.parse(raw);
     if (data && data.binaryPath && fs.existsSync(data.binaryPath)) {
+      logDebug('Found valid existing llama.cpp install', {
+        version: data.version,
+        binaryPath: data.binaryPath,
+      });
       return {
         installed: true,
         version: data.version,
         binaryPath: data.binaryPath,
       };
     }
+    logDebug('No valid llama.cpp install metadata found or binary missing');
     return { installed: false };
-  } catch {
+  } catch (error) {
+    logDebug('Install metadata not present or unreadable, treating as not installed', {
+      error:
+        error instanceof Error
+          ? { name: error.name, message: error.message }
+          : String(error),
+    });
     return { installed: false };
   }
 }
 
 function writeInstallMetadata(status: { version: string; binaryPath: string }) {
   ensureDirSync(path.dirname(METADATA_FILE));
+  logDebug('Writing install metadata', status);
   fs.writeFileSync(METADATA_FILE, JSON.stringify(status, null, 2), 'utf8');
 }
 
@@ -174,6 +224,7 @@ type GithubRelease = {
 };
 
 async function fetchJson<T>(url: string): Promise<T> {
+  logDebug('HTTP GET JSON', { url });
   return new Promise<T>((resolve, reject) => {
     const req = https.request(
       url,
@@ -191,6 +242,11 @@ async function fetchJson<T>(url: string): Promise<T> {
               `GitHub API request failed: ${res.statusCode} ${res.statusMessage || ''}`,
             ),
           );
+          logError('GitHub API request failed', undefined, {
+            url,
+            statusCode: res.statusCode,
+            statusMessage: res.statusMessage,
+          });
           return;
         }
         const chunks: Buffer[] = [];
@@ -199,15 +255,20 @@ async function fetchJson<T>(url: string): Promise<T> {
           try {
             const raw = Buffer.concat(chunks).toString('utf8');
             const json = JSON.parse(raw);
+            logDebug('HTTP GET JSON success', { url });
             resolve(json as T);
           } catch (e) {
+            logError('Failed to parse JSON response', e as Error, { url });
             reject(e);
           }
         });
       },
     );
 
-    req.on('error', (err) => reject(err));
+    req.on('error', (err) => {
+      logError('HTTP GET JSON network error', err, { url });
+      reject(err);
+    });
     req.end();
   });
 }
@@ -219,6 +280,7 @@ async function downloadFile(
 ): Promise<void> {
   ensureDirSync(path.dirname(destPath));
 
+  logDebug('Starting download', { url, destPath });
   return new Promise<void>((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
     let received = 0;
@@ -279,6 +341,11 @@ async function downloadFile(
 
         res.on('end', () => {
           file.end();
+          logDebug('Download complete', {
+            url,
+            destPath,
+            totalBytes: received,
+          });
           onProgress?.({
             type: 'download-complete',
             filePath: destPath,
@@ -293,29 +360,132 @@ async function downloadFile(
       fs.unlink(destPath, () => {
         // ignore
       });
+      logError('Download failed', err, { url, destPath });
       reject(err);
     });
   });
 }
 
-// NOTE: For now we avoid archive extraction to keep implementation simple and robust.
-// Many llama.cpp releases ship self-contained binaries or archives. If the picked asset
-// is an archive, you may extend this with unzip/untar logic or call out to a helper.
-// To satisfy current requirements minimally, we:
-// - Download the asset into INSTALL_DIR
-// - If it is an .exe on Windows, treat that as the binary
-// - If it's any other file, persist its path; the app can later adapt if needed.
+/**
+* Extract a zip archive into targetDir and resolve when complete.
+* Uses the "unzipper" package in the Electron main process.
+*/
+async function extractZip(assetPath: string, targetDir: string): Promise<void> {
+ // eslint-disable-next-line @typescript-eslint/no-var-requires
+ const unzipper = require('unzipper') as typeof import('unzipper');
 
-function inferBinaryPathFromAsset(assetPath: string, platform: Platform): string {
-  const lower = assetPath.toLowerCase();
-  if (platform === 'windows') {
-    if (lower.endsWith('.exe')) {
-      return assetPath;
-    }
-  }
-  // For archives or other formats, we default to the asset itself for now.
-  // A future enhancement can add extraction and actual binary path detection.
-  return assetPath;
+ ensureDirSync(targetDir);
+ logDebug('Extracting llama.cpp zip archive', { assetPath, targetDir });
+
+ return new Promise<void>((resolve, reject) => {
+   const directory = unzipper.Extract({ path: targetDir });
+
+   directory.on('close', () => {
+     logDebug('Zip extraction completed', { assetPath, targetDir });
+     resolve();
+   });
+
+   directory.on('error', (err: Error) => {
+     logError('Zip extraction failed', err, { assetPath, targetDir });
+     reject(err);
+   });
+
+   fs.createReadStream(assetPath).pipe(directory);
+ });
+}
+
+/**
+* Given the downloaded asset and platform, locate the llama-server binary.
+*
+* For the Ubuntu Vulkan x64 asset layout:
+*   llama-{version}-bin-ubuntu-vulkan-x64/build/bin/llama-server
+*
+* Behavior:
+* - If asset is a Windows .exe, return as-is.
+* - If asset is a .zip, extract into INSTALL_DIR and search for llama-server.
+* - Ensure the found binary is marked executable.
+* - Otherwise, fall back to assetPath to match previous behavior.
+*/
+async function inferBinaryPathFromAsset(
+ assetPath: string,
+ platform: Platform,
+): Promise<string> {
+ const lower = assetPath.toLowerCase();
+
+ // Raw Windows executable
+ if (platform === 'windows' && lower.endsWith('.exe')) {
+   return assetPath;
+ }
+
+ // Zip archives: extract then search for llama-server
+ if (lower.endsWith('.zip')) {
+   const extractRoot = INSTALL_DIR;
+   await extractZip(assetPath, extractRoot);
+
+   // Expected: llama-{version}-bin-ubuntu-vulkan-x64/build/bin/llama-server
+   const entries = fs.readdirSync(extractRoot);
+   for (const entry of entries) {
+     const full = path.join(extractRoot, entry);
+     if (!fs.statSync(full).isDirectory()) continue;
+
+     const buildBin = path.join(full, 'build', 'bin');
+     if (fs.existsSync(buildBin) && fs.statSync(buildBin).isDirectory()) {
+       const binEntries = fs.readdirSync(buildBin);
+       for (const be of binEntries) {
+         const candidate = path.join(buildBin, be);
+         const name = be.toLowerCase();
+         if (
+           fs.statSync(candidate).isFile() &&
+           (name === 'llama-server' || name === 'llama-server.exe')
+         ) {
+           try {
+             fs.chmodSync(candidate, 0o755);
+           } catch {
+             // best-effort; ignore chmod failures on non-POSIX
+           }
+           logDebug('Resolved llama-server binary inside archive', {
+             assetPath,
+             candidate,
+           });
+           return candidate;
+         }
+       }
+     }
+   }
+
+   // Fallback: recursive search under extractRoot
+   const stack: string[] = [extractRoot];
+   while (stack.length) {
+     const dir = stack.pop() as string;
+     const children = fs.readdirSync(dir);
+     for (const child of children) {
+       const full = path.join(dir, child);
+       const stat = fs.statSync(full);
+       if (stat.isDirectory()) {
+         stack.push(full);
+       } else if (stat.isFile()) {
+         const name = child.toLowerCase();
+         if (name === 'llama-server' || name === 'llama-server.exe') {
+           try {
+             fs.chmodSync(full, 0o755);
+           } catch {
+             // ignore chmod errors
+           }
+           logDebug('Resolved llama-server binary via recursive search', {
+             assetPath,
+             candidate: full,
+           });
+           return full;
+         }
+       }
+     }
+   }
+
+   throw new Error(`llama-server binary not found in extracted archive: ${assetPath}`);
+ }
+
+ // Non-zip assets: preserve previous behavior.
+ return assetPath;
 }
 
 export async function getLlamaInstallStatus(): Promise<LlamaInstallStatus> {
@@ -326,9 +496,243 @@ export async function getLlamaInstallStatus(): Promise<LlamaInstallStatus> {
   return { installed: false };
 }
 
+/**
+ * Ensure Qwen3-4B-Q4_K_M.gguf exists under MODEL_DIR.
+ */
+async function downloadModelIfNeeded(
+  onProgress?: (p: LlamaSetupProgress) => void,
+): Promise<string> {
+  ensureDirSync(MODEL_DIR);
+
+  if (fs.existsSync(QWEN3_MODEL_PATH)) {
+    logDebug('Model already present, skipping download', {
+      modelPath: QWEN3_MODEL_PATH,
+    });
+    return QWEN3_MODEL_PATH;
+  }
+
+  const tmpPath = QWEN3_MODEL_PATH + '.download';
+  logDebug('Downloading Qwen3 model', {
+    url: QWEN3_MODEL_URL,
+    tmpPath,
+    finalPath: QWEN3_MODEL_PATH,
+  });
+  await downloadFile(QWEN3_MODEL_URL, tmpPath, onProgress);
+  fs.renameSync(tmpPath, QWEN3_MODEL_PATH);
+  logDebug('Qwen3 model download complete and moved into place', {
+    modelPath: QWEN3_MODEL_PATH,
+  });
+
+  return QWEN3_MODEL_PATH;
+}
+
+function checkPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const net = require('net');
+    logDebug('Checking port availability', { port });
+    const server = net.createServer();
+
+    server.once('error', (err: Error) => {
+      logDebug('Port not available', {
+        port,
+        error: err.message,
+      });
+      resolve(false);
+    });
+
+    server.once('listening', () => {
+      server.close(() => {
+        logDebug('Port is available', { port });
+        resolve(true);
+      });
+    });
+
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+async function pickAvailablePort(): Promise<number> {
+  // Choose a random high port and ensure it is available.
+  // If the first choice is not available, retry a few times.
+  for (let i = 0; i < 10; i++) {
+    const candidate = 10000 + Math.floor(Math.random() * 50000);
+    // eslint-disable-next-line no-await-in-loop
+    const available = await checkPortAvailable(candidate);
+    if (available) {
+      logDebug('Selected port for llama server', { port: candidate });
+      return candidate;
+    }
+  }
+  const msg = 'No available port found for llama server after multiple attempts';
+  logError(msg);
+  throw new Error(msg);
+}
+
+async function spawnLlamaServer(binaryPath: string, modelPath: string): Promise<{ port: number }> {
+  if (llamaServerProcess) {
+    // If already running, reuse existing port if known.
+    if (llamaServerPort) {
+      logDebug('llama-server already running, reusing existing port', {
+        port: llamaServerPort,
+      });
+      return { port: llamaServerPort };
+    }
+    // Otherwise kill and restart cleanly.
+    logDebug('Existing llama-server process found without known port, restarting');
+    try {
+      llamaServerProcess.kill();
+    } catch (error) {
+      logError('Failed to kill existing llama-server process', error);
+    }
+    llamaServerProcess = null;
+    llamaServerPort = null;
+  }
+
+  const port = await pickAvailablePort();
+
+  const args = [
+    '--host',
+    '127.0.0.1',
+    '--port',
+    String(port),
+    '--model',
+    modelPath,
+    '--ctx-size',
+    '8192',
+    '--parallel',
+    '4',
+  ];
+
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const spawn = require('child_process').spawn;
+  logDebug('Spawning llama-server process', {
+    binaryPath,
+    args,
+  });
+  const proc = spawn(binaryPath, args, {
+    cwd: INSTALL_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  llamaServerProcess = proc;
+  llamaServerPort = port;
+
+  proc.stdout?.on('data', (data: Buffer) => {
+    const text = data.toString();
+    logDebug('llama-server stdout', { line: text.trim() });
+  });
+
+  proc.stderr?.on('data', (data: Buffer) => {
+    const text = data.toString().toLowerCase();
+    logError('llama-server stderr', undefined, { line: text.trim() });
+    if (text.includes('address already in use') || text.includes('eaddrinuse')) {
+      // Port conflict: attempt to restart on a new port.
+      (async () => {
+        try {
+          await restartLlamaServerOnNewPort(binaryPath, modelPath);
+        } catch {
+          // If restart fails, leave process cleanup to exit handler.
+        }
+      })();
+    }
+  });
+
+  proc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+    logDebug('llama-server process exited', { code, signal });
+    llamaServerProcess = null;
+    llamaServerPort = null;
+  });
+
+  return { port };
+}
+
+async function restartLlamaServerOnNewPort(
+  binaryPath: string,
+  modelPath: string,
+): Promise<{ port: number }> {
+  if (llamaServerProcess) {
+    try {
+      llamaServerProcess.kill();
+    } catch {
+      // ignore
+    }
+    llamaServerProcess = null;
+    llamaServerPort = null;
+  }
+
+  return spawnLlamaServer(binaryPath, modelPath);
+}
+
+/**
+ * Ensure llama.cpp is installed (installLatestLlama) AND
+ * Qwen3-4B GGUF is present, then start llama-server with Qwen3
+ * on an available port.
+ *
+ * Returns the base HTTP endpoint for use by preload.ts.
+ */
+export async function ensureLlamaServer(
+  onProgress?: (p: LlamaSetupProgress) => void,
+): Promise<{ ok: true; endpoint: string } | { ok: false; error: string }> {
+  logDebug('Ensuring llama-server is running with required binaries and model');
+  const install = await installLatestLlama(onProgress);
+  if (!install.installed || !install.binaryPath) {
+    const error = install.error || 'llama.cpp not installed';
+    logError('Cannot start llama-server, llama.cpp not installed', error);
+    return { ok: false, error };
+  }
+
+  const modelPath = await downloadModelIfNeeded(onProgress);
+
+  try {
+    const { port } = await spawnLlamaServer(install.binaryPath, modelPath);
+    const endpoint = `http://127.0.0.1:${port}`;
+    logDebug('llama-server started successfully', {
+      endpoint,
+      modelPath,
+    });
+    onProgress?.({
+      type: 'status',
+      message: `llama-server running at ${endpoint} with Qwen3-4B-Q4_K_M.gguf`,
+    });
+    return { ok: true, endpoint };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    logError('Failed to start llama-server', err, { modelPath });
+    onProgress?.({
+      type: 'error',
+      message: `Failed to start llama-server: ${msg}`,
+    });
+    return { ok: false, error: msg };
+  }
+}
+
+/**
+ * Stop the managed llama-server process if it is running.
+ * This is idempotent and safe to call multiple times.
+ */
+export function stopLlamaServer(): void {
+  if (!llamaServerProcess) {
+    logDebug('stopLlamaServer called but no managed llama-server is running');
+    return;
+  }
+
+  try {
+    logDebug('Stopping managed llama-server process');
+    llamaServerProcess.kill();
+  } catch (error) {
+    logError('Error while stopping llama-server process', error);
+  } finally {
+    llamaServerProcess = null;
+    llamaServerPort = null;
+  }
+}
+
+
 export async function installLatestLlama(
   onProgress?: (p: LlamaSetupProgress) => void,
 ): Promise<LlamaInstallStatus> {
+  logDebug('Starting installLatestLlama');
   try {
     const platform = getPlatform();
     const arch = getArch();
@@ -350,30 +754,61 @@ export async function installLatestLlama(
     });
 
     const release = await fetchJson<GithubRelease>(RELEASES_API_URL);
+    logDebug('Fetched latest llama.cpp release metadata', {
+      tag: release.tag_name,
+      assetCount: (release.assets || []).length,
+    });
     const matcher = pickAssetNamePattern(platform, arch);
     const candidateAssets = (release.assets || []).filter((a) =>
       matcher(a.name),
     );
+    logDebug('Filtered candidate assets for platform/arch', {
+      platform,
+      arch,
+      candidateCount: candidateAssets.length,
+    });
 
     if (!candidateAssets.length) {
       const msg = `No suitable llama.cpp asset found for ${platform}/${arch} in latest release ${release.tag_name}`;
+      logError('No matching llama.cpp assets', undefined, {
+        platform,
+        arch,
+        tag: release.tag_name,
+      });
       onProgress?.({ type: 'error', message: msg });
       return { installed: false, error: msg };
     }
 
     // Prefer smaller / likely binary assets first
     const asset = candidateAssets[0];
+    logDebug('Selected llama.cpp asset', {
+      name: asset.name,
+      url: asset.browser_download_url,
+    });
 
     ensureDirSync(INSTALL_DIR);
     const destPath = path.join(INSTALL_DIR, asset.name);
 
     await downloadFile(asset.browser_download_url, destPath, onProgress);
 
-    const binaryPath = inferBinaryPathFromAsset(destPath, platform);
+    const binaryPath = await inferBinaryPathFromAsset(destPath, platform);
+    logDebug('Inferred llama.cpp binary path from asset', {
+      assetPath: destPath,
+      binaryPath,
+      platform,
+    });
 
+    // Persist llama.cpp binary metadata
     writeInstallMetadata({
       version: release.tag_name,
       binaryPath,
+    });
+
+    // After llama.cpp binary is available, ensure the default model is downloaded.
+    // This aligns with the requirement: "download the model as a part of downloading llama cpp."
+    const modelPath = await downloadModelIfNeeded(onProgress);
+    logDebug('Verified/Downloaded default Qwen3 model for llama.cpp', {
+      modelPath,
     });
 
     onProgress?.({
@@ -382,15 +817,20 @@ export async function installLatestLlama(
       binaryPath,
     });
 
-    return {
+    // Note: modelPath is not part of LlamaInstallStatus today; llama-server startup
+    // uses downloadModelIfNeeded/ensureLlamaServer, so we keep the return type stable.
+    const result: LlamaInstallStatus = {
       installed: true,
       version: release.tag_name,
       binaryPath,
     };
+    logDebug('installLatestLlama completed successfully', result);
+    return result;
   } catch (error: any) {
     const msg = `Failed to install llama.cpp: ${error?.message || String(
       error,
     )}`;
+    logError('installLatestLlama failed', error);
     onProgress?.({ type: 'error', message: msg });
     return { installed: false, error: msg };
   }

@@ -1,5 +1,32 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+const LOG_PREFIX_PRELOAD = '[Preload]';
+
+function logPreload(message: string, extra?: Record<string, unknown>): void {
+  if (extra) {
+    // eslint-disable-next-line no-console
+    console.log(`${LOG_PREFIX_PRELOAD} ${message}`, extra);
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(`${LOG_PREFIX_PRELOAD} ${message}`);
+  }
+}
+
+function logPreloadError(
+  message: string,
+  error?: unknown,
+  extra?: Record<string, unknown>,
+): void {
+  // eslint-disable-next-line no-console
+  console.error(`${LOG_PREFIX_PRELOAD} ${message}`, {
+    error:
+      error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : error,
+    ...extra,
+  });
+}
+
 /**
 * Preload script:
 * - Exposes a minimal, typed surface for LlamaCPP HTTP interactions.
@@ -76,6 +103,11 @@ type LlamaSetupProgress =
   | { type: 'install-complete'; version: string; binaryPath: string }
   | { type: 'error'; message: string };
 
+type LlamaServerStatus =
+  | { ok: true; endpoint: string }
+  | { ok: false; error: string };
+
+
 /**
  * Call a LlamaCPP-compatible chat endpoint (non-streaming).
  *
@@ -86,6 +118,13 @@ async function llamaQuery(
   prompt: string,
   opts: Partial<LlamaChatCompletionRequest> = {},
 ): Promise<LlamaChatCompletionResponse> {
+  logPreload('llama.query invoked', {
+    hasCustomEndpoint: Boolean((opts as any).endpoint),
+    model: opts.model,
+    temperature: opts.temperature,
+    max_tokens: opts.max_tokens,
+    extraMessages: opts.messages?.length ?? 0,
+  });
   const endpoint =
     (opts as any).endpoint || `${DEFAULT_LLAMA_ENDPOINT}/v1/chat/completions`;
 
@@ -110,6 +149,12 @@ async function llamaQuery(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    logPreloadError('llama.query HTTP error', undefined, {
+      endpoint,
+      status: res.status,
+      statusText: res.statusText,
+      bodySnippet: text.slice(0, 512),
+    });
     throw new Error(
       `Llama query failed (${res.status} ${res.statusText}): ${text}`,
     );
@@ -117,6 +162,10 @@ async function llamaQuery(
 
   // Allow loosely-typed response to accommodate different LlamaCPP frontends.
   const data = (await res.json()) as any;
+  logPreload('llama.query response received', {
+    hasChoices: Array.isArray(data?.choices),
+    model: data?.model,
+  });
 
   // Normalize into LlamaChatCompletionResponse-like shape.
   if (!data.choices && data.content) {
@@ -171,6 +220,13 @@ async function* llamaStream(
     stream: true,
   };
 
+  logPreload('llama.stream invoked', {
+    endpoint,
+    model: opts.model,
+    temperature: opts.temperature,
+    max_tokens: opts.max_tokens,
+  });
+
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -179,6 +235,12 @@ async function* llamaStream(
 
   if (!res.body || !res.ok) {
     const text = await res.text().catch(() => '');
+    logPreloadError('llama.stream HTTP error', undefined, {
+      endpoint,
+      status: res.status,
+      statusText: res.statusText,
+      bodySnippet: text.slice(0, 512),
+    });
     throw new Error(
       `Llama stream failed (${res.status} ${res.statusText}): ${text}`,
     );
@@ -187,6 +249,8 @@ async function* llamaStream(
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+
+  let yieldedTokens = 0;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -245,40 +309,70 @@ async function* llamaStream(
       }
 
       yield { raw, json, token, done: isDone };
+      if (token) {
+        yieldedTokens += 1;
+      }
 
       if (isDone) {
         return;
       }
+    
+      logPreload('llama.stream completed', {
+        yieldedTokens,
+      });
     }
   }
 }
 
 /**
-* Lightweight status check.
-* For now, just attempts a HEAD/GET on the base endpoint.
-*/
+ * Lightweight status check.
+ * If a managed llama-server is running, main will expose its endpoint via IPC;
+ * otherwise we fall back to DEFAULT_LLAMA_ENDPOINT.
+ */
 async function llamaGetStatus(): Promise<LlamaStatus> {
- try {
-   const res: Response | null = await fetch(DEFAULT_LLAMA_ENDPOINT, {
-     method: 'GET',
-   }).catch((): null => null);
+  // Ask main if it has a managed llama-server endpoint (Qwen3/llama-server).
+  try {
+    logPreload('llama.getStatus invoked');
+    const managed: LlamaServerStatus | undefined =
+      (await (ipcRenderer.invoke('llama-server-get-endpoint') as Promise<LlamaServerStatus>)) ??
+      undefined;
+    const endpoint =
+      managed && managed.ok ? managed.endpoint : DEFAULT_LLAMA_ENDPOINT;
+    logPreload('llama.getStatus managed endpoint check', {
+      managedOk: managed?.ok,
+      managedEndpoint: managed?.ok ? managed.endpoint : null,
+      effectiveEndpoint: endpoint,
+    });
+
+    const res: Response | null = await fetch(endpoint, {
+      method: 'GET',
+    }).catch((err: any): null => {
+      logPreloadError('llama.getStatus fetch failed', err, { endpoint });
+      return null;
+    });
 
    if (!res) {
+     logPreloadError('llama.getStatus: no HTTP response from server', undefined, {
+       endpoint,
+     });
      return {
        ok: false,
-       endpoint: DEFAULT_LLAMA_ENDPOINT,
+       endpoint,
        error: 'No response from LlamaCPP server',
      };
    }
 
-   return {
+   const status: LlamaStatus = {
      ok: res.ok,
-     endpoint: DEFAULT_LLAMA_ENDPOINT,
+     endpoint,
      error: res.ok
        ? undefined
        : `HTTP ${res.status} ${res.statusText}`,
    };
+   logPreload('llama.getStatus HTTP probe result', status);
+   return status;
  } catch (error: any) {
+   logPreloadError('llama.getStatus threw', error);
    return {
      ok: false,
      endpoint: DEFAULT_LLAMA_ENDPOINT,
@@ -296,24 +390,72 @@ contextBridge.exposeInMainWorld('llama', {
 
   // Setup helpers for native llama.cpp binary management
   getInstallStatus: async (): Promise<LlamaInstallStatus> => {
-    const status = await ipcRenderer.invoke('llama-get-status');
+    logPreload('llama.getInstallStatus bridge invoke');
+    const status = await ipcRenderer
+      .invoke('llama-get-status')
+      .catch((err: any) => {
+        logPreloadError('llama-get-status IPC failed', err);
+        const fallback: LlamaInstallStatus = {
+          installed: false,
+          error: err?.message || 'IPC llama-get-status failed',
+        };
+        return fallback;
+      });
+
+    logPreload('llama.getInstallStatus bridge result', status as any);
     return status as LlamaInstallStatus;
   },
 
   installLatest: async (
     onProgress?: (p: LlamaSetupProgress) => void,
   ): Promise<LlamaInstallStatus> => {
+    logPreload('llama.installLatest bridge invoked');
     // Listen for progress events for this install call.
     const listener = (_event: any, progress: LlamaSetupProgress) => {
+      logPreload('llama.installLatest progress event', progress as any);
       onProgress?.(progress);
     };
     ipcRenderer.on('llama-install-progress', listener);
 
     try {
-      const result = await ipcRenderer.invoke('llama-install-latest');
+      const result = await ipcRenderer
+        .invoke('llama-install-latest')
+        .catch((err: any) => {
+          logPreloadError('llama-install-latest IPC failed', err);
+          const fallback: LlamaInstallStatus = {
+            installed: false,
+            error: err?.message || 'IPC llama-install-latest failed',
+          };
+          return fallback;
+        });
+
+      logPreload('llama.installLatest bridge completed', result as any);
       return result as LlamaInstallStatus;
     } finally {
       ipcRenderer.removeListener('llama-install-progress', listener);
+      logPreload('llama.installLatest progress listener removed');
+    }
+  },
+
+  /**
+   * Ensure the managed llama-server is running.
+   * This simply forwards to the main-process IPC that wraps ensureLlamaServer()
+   * in src/llamaSetup.ts, and returns its { ok, endpoint, error? } result.
+   */
+  ensureServer: async (): Promise<LlamaServerStatus> => {
+    logPreload('llama.ensureServer bridge invoked');
+    try {
+      const result = await ipcRenderer.invoke(
+        'llama-ensure-server',
+      ) as LlamaServerStatus;
+      logPreload('llama.ensureServer bridge result', result as any);
+      return result;
+    } catch (err: any) {
+      logPreloadError('llama.ensureServer IPC failed', err);
+      return {
+        ok: false,
+        error: err?.message || 'IPC llama-ensure-server failed',
+      };
     }
   },
 });

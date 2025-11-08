@@ -32,22 +32,54 @@ import './index.css';
 import P2PCF from 'p2pcf';
 
 const ROOM_ID_STORAGE_KEY = 'p2pcf_room_id';
+const LOG_PREFIX_RENDERER = '[Renderer]';
+
+function logRenderer(message: string, extra?: Record<string, unknown>): void {
+  if (extra) {
+    // eslint-disable-next-line no-console
+    console.log(`${LOG_PREFIX_RENDERER} ${message}`, extra);
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(`${LOG_PREFIX_RENDERER} ${message}`);
+  }
+}
+
+function logRendererError(
+  message: string,
+  error?: unknown,
+  extra?: Record<string, unknown>,
+): void {
+  // eslint-disable-next-line no-console
+  console.error(`${LOG_PREFIX_RENDERER} ${message}`, {
+    error:
+      error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : error,
+    ...extra,
+  });
+}
 
 function generateRandomRoomId(): string {
   const random = Math.random().toString(36).slice(2, 10);
-  return `room-${random}`;
+  const roomId = `room-${random}`;
+  logRenderer('Generated new random room id', { roomId });
+  return roomId;
 }
 
 function getOrCreateRoomId(): string {
   let roomId = window.localStorage.getItem(ROOM_ID_STORAGE_KEY);
   if (!roomId) {
+    logRenderer('No room id in storage, generating one');
     roomId = generateRandomRoomId();
     window.localStorage.setItem(ROOM_ID_STORAGE_KEY, roomId);
+  } else {
+    logRenderer('Using existing room id from storage', { roomId });
   }
   return roomId;
 }
 
 function setRoomId(roomId: string): void {
+  logRenderer('Persisting room id', { roomId });
   window.localStorage.setItem(ROOM_ID_STORAGE_KEY, roomId);
 }
 
@@ -55,18 +87,29 @@ function updateRoomIdDisplay(roomId: string): void {
   const el = document.getElementById('room-id');
   if (el) {
     el.textContent = roomId;
+    logRenderer('Updated room id display', { roomId });
+  } else {
+    logRendererError('room-id element not found in DOM');
   }
 }
 
 function createP2PCFClient(roomId: string): any {
   const clientId = 'client';
+  logRenderer('Creating P2PCF client', { clientId, roomId });
   const p2pcf = new P2PCF(clientId, roomId);
 
   p2pcf.on('peerconnect', (peer: any) => {
-    console.log('New peer:', peer.id, peer.client_id);
+    logRenderer('Peer connected', {
+      id: peer?.id,
+      client_id: peer?.client_id,
+    });
 
     peer.on('track', (track: any, stream: any) => {
-      console.log('track', { track, stream });
+      logRenderer('Received media track from peer', {
+        peerId: peer?.id,
+        clientId: peer?.client_id,
+        kind: track?.kind,
+      });
     });
 
     // Example hook: we could expose llama here later, e.g.:
@@ -74,15 +117,28 @@ function createP2PCFClient(roomId: string): any {
   });
 
   p2pcf.on('peerclose', (peer: any) => {
-    console.log('peer disconnected', peer?.id, peer?.client_id);
+    logRenderer('Peer disconnected', {
+      id: peer?.id,
+      client_id: peer?.client_id,
+    });
   });
 
   p2pcf.on('msg', (peer: any, data: any) => {
-    console.log('message from peer', peer?.id, 'data', data);
+    logRenderer('Message from peer', {
+      id: peer?.id,
+      client_id: peer?.client_id,
+      // Avoid logging full binary payloads; just type/size.
+      dataType: typeof data,
+      length:
+        typeof data === 'string' || Array.isArray(data)
+          ? (data as any).length
+          : undefined,
+    });
     // Later: integrate with llama API, e.g. forward prompts/results
   });
 
   // Start polling after listeners are attached
+  logRenderer('Starting P2PCF client');
   p2pcf.start();
 
   return p2pcf;
@@ -120,6 +176,11 @@ declare global {
         binaryPath?: string;
         error?: string;
       }>;
+      ensureServer?: () => Promise<{
+        ok: boolean;
+        endpoint?: string;
+        error?: string;
+      }>;
     };
   }
 }
@@ -132,9 +193,10 @@ function initP2PCFWithCurrentRoom(): void {
 
   if (p2pcf) {
     try {
+      logRenderer('Destroying previous P2PCF instance before re-init');
       p2pcf.destroy();
     } catch (e) {
-      console.warn('Error destroying previous P2PCF instance', e);
+      logRendererError('Error destroying previous P2PCF instance', e as Error);
     }
     p2pcf = null;
   }
@@ -145,11 +207,13 @@ function initP2PCFWithCurrentRoom(): void {
 function setupRoomControls(): void {
   const newRoomButton = document.getElementById('new-room-btn');
   if (!newRoomButton) {
+    logRendererError('new-room-btn element not found; room controls disabled');
     return;
   }
 
   newRoomButton.addEventListener('click', () => {
     const newRoomId = generateRandomRoomId();
+    logRenderer('User requested new room id', { newRoomId });
     setRoomId(newRoomId);
     updateRoomIdDisplay(newRoomId);
 
@@ -161,13 +225,20 @@ function setupRoomControls(): void {
 function parseStartupParams(): URLSearchParams {
   try {
     const url = new URL(window.location.href);
-    return url.searchParams;
-  } catch {
+    const params = url.searchParams;
+    logRenderer('Parsed startup params from URL', {
+      llamaInstalled: params.get('llamaInstalled'),
+      llamaVersion: params.get('llamaVersion'),
+    });
+    return params;
+  } catch (error) {
+    logRendererError('Failed to parse startup params; using empty params', error);
     return new URLSearchParams();
   }
 }
 
 function renderSetupScreen() {
+  logRenderer('Rendering llama setup screen');
   const root = document.body;
   root.innerHTML = '';
 
@@ -349,9 +420,11 @@ function renderSetupScreen() {
   };
 
   installButton.onclick = () => {
+    logRenderer('Install button clicked');
     runInstall();
   };
   retryButton.onclick = () => {
+    logRenderer('Retry button clicked');
     runInstall();
   };
 }
@@ -359,25 +432,59 @@ function renderSetupScreen() {
 function renderMainUI() {
   // Keep existing HTML-driven structure: assume index.html has the room controls.
   // We only ensure that on successful setup we restore original DOM-based UI.
-  document.location.href = document.location.origin + document.location.pathname;
+  const target = document.location.origin + document.location.pathname;
+  logRenderer('Navigating to main UI', { target });
+  document.location.href = target;
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  logRenderer('DOMContentLoaded');
   const params = parseStartupParams();
   const llamaInstalledFlag = params.get('llamaInstalled') === '1';
 
   if (!llamaInstalledFlag && window.llama?.getInstallStatus) {
-    const status = await window.llama.getInstallStatus().catch(() => ({
-      installed: false,
-    }));
+    logRenderer('Checking llama install status via preload API');
+    const status = await window.llama
+      .getInstallStatus()
+      .catch((err: any) => {
+        logRendererError('llama.getInstallStatus failed in renderer', err);
+        return {
+          installed: false,
+          error: err?.message || String(err),
+        };
+      });
+    logRenderer('Renderer llama install status result', status as any);
 
     if (!status.installed) {
+      logRenderer('Llama not installed; showing setup screen');
       renderSetupScreen();
       return;
     }
+    logRenderer('Llama already installed; proceeding with main UI');
   }
 
   // If we reach here, llama is installed (or we fall back to existing behavior).
+  logRenderer('Ensuring managed llama-server is running via preload bridge');
+  if (window.llama?.ensureServer) {
+    try {
+      const status = await window.llama.ensureServer();
+      if (status.ok) {
+        logRenderer('Managed llama-server is running', {
+          endpoint: status.endpoint,
+        });
+      } else {
+        logRendererError('Failed to ensure llama-server', undefined, {
+          error: status.error,
+        });
+      }
+    } catch (err: any) {
+      logRendererError('Error while ensuring llama-server', err);
+    }
+  } else {
+    logRenderer('llama.ensureServer bridge not available; skipping server ensure');
+  }
+
+  logRenderer('Initializing main P2PCF UI');
   initP2PCFWithCurrentRoom();
   setupRoomControls();
 });
