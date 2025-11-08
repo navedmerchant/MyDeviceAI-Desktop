@@ -3,11 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; connect-src 'self' https://p2pcf.minddrop.workers.dev/ ws://localhost:* ws://0.0.0.0:*;">
-    <title>Hello World!</title>
+    <title>MyDeviceAI - P2PCF Room</title>
 
   </head>
   <body>
-    <h1>💖 Hello World!</h1>
+    <h1>MyDeviceAI - P2PCF Room</h1>
     <p>Welcome to your Electron application.</p>
+
+    <section>
+      <h2>Current Room</h2>
+      <div>
+        <span>Room ID:</span>
+        <code id="room-id">initializing...</code>
+        <button id="new-room-btn">New Room</button>
+      </div>
+    </section>
   </body>
 </html>
