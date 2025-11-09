@@ -190,11 +190,11 @@ function createP2PCFClient(roomId: string): any {
       return;
     }
 
-    if (!window.llama?.stream) {
+    if (!window.llama?.ensureServer) {
       await sendJsonSafe(peer, {
         t: 'error',
         id,
-        message: 'Llama streaming API not available in preload bridge',
+        message: 'Llama server control API not available in preload bridge',
       });
       return;
     }
@@ -202,55 +202,153 @@ function createP2PCFClient(roomId: string): any {
     await sendJsonSafe(peer, { t: 'start', id });
 
     try {
-      // Use the preload-exposed streaming helper to keep HTTP/Electron details
-      // out of the renderer. This relies on src/preload.ts: window.llama.stream().
-      logRenderer('Dispatching prompt via llama.stream bridge', {
+      logRenderer('Ensuring llama-server before HTTP streaming', {
         id,
         maxTokens,
       });
 
-      // llama.stream is an async generator of { raw, json, token?, done? }.
-      // We forward any extracted token text as "token" messages.
-      // If no token field is present, we fall back to raw.
-      const stream = window.llama.stream(prompt, {
+      const ensure = await window.llama.ensureServer();
+      if (!ensure.ok || !ensure.endpoint) {
+        throw new Error(
+          ensure.error || 'Failed to start or discover llama-server endpoint',
+        );
+      }
+
+      const endpoint = `${ensure.endpoint}/v1/chat/completions`;
+      logRenderer('Resolved llama-server HTTP endpoint for streaming', {
+        endpoint,
+      });
+
+      const body: any = {
+        model: 'local-model',
+        temperature: 0.7,
         max_tokens: maxTokens,
-      }) as AsyncGenerator<
-        { raw: string; json: any | null; token?: string; done?: boolean },
-        void,
-        unknown
-      >;
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        stream: true,
+      };
 
-      for await (const chunk of stream) {
-        const tok =
-          (chunk.token && String(chunk.token)) ||
-          (typeof chunk.raw === 'string' ? chunk.raw : '');
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
 
-        if (tok) {
-          await sendJsonSafe(peer, {
-            t: 'token',
-            id,
-            tok,
-          });
+      if (!res.body || !res.ok) {
+        const text = await res.text().catch(() => '');
+        logRendererError('llama HTTP stream error', undefined, {
+          endpoint,
+          status: res.status,
+          statusText: res.statusText,
+          bodySnippet: text.slice(0, 512),
+        });
+        throw new Error(
+          `Llama stream failed (${res.status} ${res.statusText}): ${text}`,
+        );
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { value, done: doneReading } = await reader.read();
+        if (doneReading) {
+          if (buffer.trim().length > 0) {
+            const line = buffer.trim();
+            let tok: string | undefined;
+            try {
+              const json = JSON.parse(line);
+              tok =
+                json.choices?.[0]?.delta?.content ??
+                json.choices?.[0]?.message?.content ??
+                undefined;
+            } catch {
+              tok = line;
+            }
+            if (tok) {
+              await sendJsonSafe(peer, {
+                t: 'token',
+                id,
+                tok: String(tok),
+              });
+            }
+          }
+          break;
         }
 
-        if (chunk.done) {
-          break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex: number;
+        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+
+          if (!line) {
+            continue;
+          }
+
+          let tok: string | undefined;
+
+          try {
+            const json = JSON.parse(line);
+            tok =
+              json.choices?.[0]?.delta?.content ??
+              json.choices?.[0]?.message?.content ??
+              undefined;
+
+            const done =
+              json.done === true || !!json.choices?.[0]?.finish_reason;
+
+            if (tok) {
+              await sendJsonSafe(peer, {
+                t: 'token',
+                id,
+                tok: String(tok),
+              });
+            }
+
+            if (done) {
+              await sendJsonSafe(peer, { t: 'end', id });
+              return;
+            }
+          } catch {
+            tok = line;
+            if (tok) {
+              await sendJsonSafe(peer, {
+                t: 'token',
+                id,
+                tok: String(tok),
+              });
+            }
+          }
         }
       }
 
       await sendJsonSafe(peer, { t: 'end', id });
     } catch (err) {
-      logRendererError('Error while streaming llama completion via bridge', err as Error, {
-        id,
-      });
+      logRendererError(
+        'Error while streaming llama completion via HTTP in renderer',
+        err as Error,
+        {
+          id,
+        },
+      );
       await sendJsonSafe(peer, {
         t: 'error',
         id,
         message:
           (err as Error)?.message ||
-          'Unknown error during completion via llama bridge',
+          'Unknown error during completion via llama HTTP',
       });
+      return;
     }
+
+    return;
   }
 
   p2pcf.on('msg', (peer: any, data: any) => {
@@ -341,55 +439,7 @@ function createP2PCFClient(roomId: string): any {
 declare global {
   interface Window {
     llama?: {
-      // Streaming chat completion helper from src/preload.ts
-      stream?: (
-        prompt: string,
-        opts?: {
-          model?: string;
-          temperature?: number;
-          max_tokens?: number;
-          endpoint?: string;
-          messages?: Array<{
-            role: 'system' | 'user' | 'assistant';
-            content: string;
-          }>;
-        },
-      ) => AsyncGenerator<
-        {
-          raw: string;
-          json: any | null;
-          token?: string;
-          done?: boolean;
-        },
-        void,
-        unknown
-      >;
-
-      // Non-streaming helper (kept for completeness)
-      query?: (
-        prompt: string,
-        opts?: {
-          model?: string;
-          temperature?: number;
-          max_tokens?: number;
-          messages?: Array<{
-            role: 'system' | 'user' | 'assistant';
-            content: string;
-          }>;
-          endpoint?: string;
-        },
-      ) => Promise<{
-        id?: string;
-        object?: string;
-        created?: number;
-        model?: string;
-        choices: Array<{
-          index: number;
-          message: { role: 'system' | 'user' | 'assistant'; content: string };
-          finish_reason: string | null;
-        }>;
-      }>;
-
+      // Setup / IPC helpers still bridged via preload
       getStatus?: () => Promise<{
         ok: boolean;
         endpoint: string;

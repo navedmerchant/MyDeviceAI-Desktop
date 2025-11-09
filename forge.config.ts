@@ -26,7 +26,7 @@ const config: ForgeConfig = {
     new AutoUnpackNativesPlugin({}),
     new WebpackPlugin({
       mainConfig,
-      devContentSecurityPolicy: "connect-src 'self' * 'unsafe-eval'",
+      devContentSecurityPolicy: "default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; connect-src 'self' https://p2pcf.minddrop.workers.dev/ ws://localhost:* ws://0.0.0.0:* http://localhost:* http://0.0.0.0:*;default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; connect-src 'self' https://p2pcf.minddrop.workers.dev/ ws://localhost:* ws://0.0.0.0:* http://localhost:* http://0.0.0.0:*;",
       renderer: {
         config: rendererConfig,
         entryPoints: [

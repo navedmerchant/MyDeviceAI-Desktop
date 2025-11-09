@@ -497,6 +497,37 @@ export async function getLlamaInstallStatus(): Promise<LlamaInstallStatus> {
 }
 
 /**
+ * Internal helper: ensure llama.cpp binary is installed and usable.
+ * - Only downloads once; subsequent calls reuse existing metadata/binary.
+ */
+async function ensureLlamaBinary(
+  onProgress?: (p: LlamaSetupProgress) => void,
+): Promise<LlamaInstallStatus> {
+  const existing = await getLlamaInstallStatus();
+  if (existing.installed && existing.binaryPath && fs.existsSync(existing.binaryPath)) {
+    logDebug('ensureLlamaBinary: using existing llama.cpp binary', {
+      version: existing.version,
+      binaryPath: existing.binaryPath,
+    });
+    return existing;
+  }
+
+  logDebug('ensureLlamaBinary: no valid install found, invoking installLatestLlama');
+  const installed = await installLatestLlama(onProgress);
+  if (installed.installed && installed.binaryPath && fs.existsSync(installed.binaryPath)) {
+    logDebug('ensureLlamaBinary: installLatestLlama succeeded', {
+      version: installed.version,
+      binaryPath: installed.binaryPath,
+    });
+    return installed;
+  }
+
+  const error = installed.error || 'Failed to install llama.cpp';
+  logError('ensureLlamaBinary: installLatestLlama failed', undefined, { error });
+  return { installed: false, error };
+}
+
+/**
  * Ensure Qwen3-4B-Q4_K_M.gguf exists under MODEL_DIR.
  */
 async function downloadModelIfNeeded(
@@ -671,23 +702,47 @@ async function restartLlamaServerOnNewPort(
  *
  * Returns the base HTTP endpoint for use by preload.ts.
  */
+/**
+ * Ensure a managed llama-server is running.
+ *
+ * Behavior:
+ * - Does NOT re-download or re-install on every call.
+ * - If a managed server is already running, reuses its known port.
+ * - Otherwise:
+ *    - Ensures llama.cpp binary is installed (once).
+ *    - Ensures default model is present.
+ *    - Spawns llama-server and caches its port.
+ */
 export async function ensureLlamaServer(
   onProgress?: (p: LlamaSetupProgress) => void,
 ): Promise<{ ok: true; endpoint: string } | { ok: false; error: string }> {
-  logDebug('Ensuring llama-server is running with required binaries and model');
-  const install = await installLatestLlama(onProgress);
+  logDebug('ensureLlamaServer invoked');
+
+  // Reuse existing managed server if still running.
+  if (llamaServerProcess && llamaServerPort) {
+    const endpoint = `http://localhost:${llamaServerPort}`;
+    logDebug('ensureLlamaServer: reusing existing managed llama-server', {
+      endpoint,
+    });
+    return { ok: true, endpoint };
+  }
+
+  // Ensure llama binary exists (install once if needed).
+  const install = await ensureLlamaBinary(onProgress);
   if (!install.installed || !install.binaryPath) {
     const error = install.error || 'llama.cpp not installed';
-    logError('Cannot start llama-server, llama.cpp not installed', error);
+    logError('ensureLlamaServer: cannot start server, llama.cpp not installed', error);
     return { ok: false, error };
   }
 
+  // Ensure default model is available.
   const modelPath = await downloadModelIfNeeded(onProgress);
 
+  // Spawn llama-server once and cache the process/port.
   try {
     const { port } = await spawnLlamaServer(install.binaryPath, modelPath);
     const endpoint = `http://localhost:${port}`;
-    logDebug('llama-server started successfully', {
+    logDebug('ensureLlamaServer: started new managed llama-server', {
       endpoint,
       modelPath,
     });
@@ -698,7 +753,9 @@ export async function ensureLlamaServer(
     return { ok: true, endpoint };
   } catch (err: any) {
     const msg = err?.message || String(err);
-    logError('Failed to start llama-server', err, { modelPath });
+    logError('ensureLlamaServer: failed to start llama-server', err, {
+      modelPath,
+    });
     onProgress?.({
       type: 'error',
       message: `Failed to start llama-server: ${msg}`,
