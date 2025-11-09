@@ -265,6 +265,7 @@ function createP2PCFClient(roomId: string): any {
               const json = JSON.parse(line);
               tok =
                 json.choices?.[0]?.delta?.content ??
+                json.choices?.[0]?.delta?.reasoning_content ??
                 json.choices?.[0]?.message?.content ??
                 undefined;
             } catch {
@@ -292,38 +293,78 @@ function createP2PCFClient(roomId: string): any {
             continue;
           }
 
-          let tok: string | undefined;
-
-          try {
-            const json = JSON.parse(line);
-            tok =
-              json.choices?.[0]?.delta?.content ??
-              json.choices?.[0]?.message?.content ??
-              undefined;
-
-            const done =
-              json.done === true || !!json.choices?.[0]?.finish_reason;
-
-            if (tok) {
-              await sendJsonSafe(peer, {
-                t: 'token',
-                id,
-                tok: String(tok),
-              });
-            }
-
-            if (done) {
+          // Handle SSE format: lines start with "data: "
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6); // Remove "data: " prefix
+            
+            // SSE streams often end with "data: [DONE]"
+            if (jsonStr === '[DONE]') {
               await sendJsonSafe(peer, { t: 'end', id });
               return;
             }
-          } catch {
-            tok = line;
-            if (tok) {
-              await sendJsonSafe(peer, {
-                t: 'token',
-                id,
-                tok: String(tok),
+
+            let tok: string | undefined;
+
+            try {
+              const json = JSON.parse(jsonStr);
+              tok =
+                json.choices?.[0]?.delta?.content ??
+                json.choices?.[0]?.delta?.reasoning_content ??
+                json.choices?.[0]?.message?.content ??
+                undefined;
+
+              const done =
+                json.done === true || !!json.choices?.[0]?.finish_reason;
+
+              if (tok) {
+                await sendJsonSafe(peer, {
+                  t: 'token',
+                  id,
+                  tok: String(tok),
+                });
+              }
+
+              if (done) {
+                await sendJsonSafe(peer, { t: 'end', id });
+                return;
+              }
+            } catch (parseErr) {
+              // If JSON parsing fails, treat the data as raw text
+              logRendererError('Failed to parse SSE data as JSON', parseErr as Error, {
+                line: jsonStr.slice(0, 256),
               });
+            }
+          } else if (line.startsWith(':')) {
+            // SSE comment, ignore
+            continue;
+          } else if (line) {
+            // Try parsing non-SSE format as fallback
+            let tok: string | undefined;
+            try {
+              const json = JSON.parse(line);
+              tok =
+                json.choices?.[0]?.delta?.content ??
+                json.choices?.[0]?.delta?.reasoning_content ??
+                json.choices?.[0]?.message?.content ??
+                undefined;
+
+              const done =
+                json.done === true || !!json.choices?.[0]?.finish_reason;
+
+              if (tok) {
+                await sendJsonSafe(peer, {
+                  t: 'token',
+                  id,
+                  tok: String(tok),
+                });
+              }
+
+              if (done) {
+                await sendJsonSafe(peer, { t: 'end', id });
+                return;
+              }
+            } catch {
+              // Not JSON, skip
             }
           }
         }
