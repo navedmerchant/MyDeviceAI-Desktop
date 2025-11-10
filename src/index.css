@@ -60,8 +60,8 @@ body {
   height: 100vh;
   max-height: 100vh;
   max-width: 1120px;
-  margin: 18px auto;
-  padding: 18px 18px 14px;
+  margin: 4px auto 18px;
+  padding: 8px 18px 14px;
   border-radius: 22px;
   background:
     radial-gradient(
