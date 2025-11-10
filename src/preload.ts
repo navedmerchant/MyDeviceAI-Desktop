@@ -308,6 +308,16 @@ contextBridge.exposeInMainWorld('modelManager', {
     return ipcRenderer.invoke('models-download-hf', options);
   },
 
+  cancelDownload: async (id: string) => {
+    logPreload('modelManager.cancelDownload invoke', { id });
+    return ipcRenderer.invoke('models-cancel-download', { id });
+  },
+
+  deleteModel: async (id: string) => {
+    logPreload('modelManager.deleteModel invoke', { id });
+    return ipcRenderer.invoke('models-delete', { id });
+  },
+
   onDownloadProgress: (
     handler: (p: {
       id: string;

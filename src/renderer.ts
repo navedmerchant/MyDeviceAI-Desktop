@@ -1002,6 +1002,8 @@ declare global {
         quantization?: string;
         contextWindow?: number;
       }) => Promise<{ ok: boolean; error?: string }>;
+      cancelDownload: (id: string) => Promise<{ ok: boolean; error?: string }>;
+      deleteModel: (id: string) => Promise<{ ok: boolean; error?: string }>;
       onDownloadProgress: (
         handler: (p: {
           id: string;
@@ -1393,8 +1395,53 @@ function buildModelManagementUI() {
       }
     };
 
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = 'Delete Model';
+    deleteBtn.className = 'md-btn md-btn-ghost';
+    deleteBtn.style.fontSize = '11px';
+    deleteBtn.style.color = 'var(--md-danger)';
+    deleteBtn.disabled = activeModelId === model.id || !model.installed;
+    if (deleteBtn.disabled) {
+      deleteBtn.style.opacity = '0.5';
+      deleteBtn.style.cursor = 'default';
+    }
+
+    deleteBtn.onclick = async () => {
+      if (!window.modelManager?.deleteModel) return;
+      if (deleteBtn.disabled) return;
+
+      // Confirm deletion
+      const confirmed = confirm(
+        `Are you sure you want to delete "${model.displayName || model.id}"?\n\nThis will permanently remove the model file from your system.`
+      );
+      
+      if (!confirmed) return;
+
+      uiLog.info('Deleting model', { id: model.id });
+      const res = await window.modelManager.deleteModel(model.id);
+      
+      if (!res.ok) {
+        const errorMsg = document.createElement('div');
+        errorMsg.style.color = '#b91c1c';
+        errorMsg.style.fontSize = '12px';
+        errorMsg.style.marginTop = '4px';
+        errorMsg.textContent = `Failed to delete: ${res.error || 'unknown error'}`;
+        detailsBody.appendChild(errorMsg);
+      } else {
+        uiLog.info('Model deleted successfully', { id: model.id });
+        // Clear details and refresh list
+        currentSelectedId = null;
+        detailsBody.innerHTML = '';
+        detailsBody.textContent = 'Select a model from the left to view and edit its parameters.';
+        detailsBody.style.fontSize = '12px';
+        detailsBody.style.color = 'var(--md-text-muted)';
+        await refreshList();
+      }
+    };
+
     actionsRow.appendChild(saveBtn);
     actionsRow.appendChild(setActiveBtn);
+    actionsRow.appendChild(deleteBtn);
 
     detailsBody.appendChild(titleEl);
     detailsBody.appendChild(statusEl);
@@ -1550,14 +1597,57 @@ function buildDownloadModelsUI() {
 
   root.appendChild(container);
 
+  // Track current download ID for cancel functionality
+  let currentDownloadId: string | null = null;
+
   // Download progress tracking
   const unsubscribeProgress =
     window.modelManager?.onDownloadProgress?.((p) => {
       if (p.type === 'download-start') {
+        currentDownloadId = p.id;
         progressBarContainer.style.display = 'block';
         progressBarFill.style.width = '0%';
         hfStatus.textContent = `Downloading ${p.id}...`;
         hfStatus.style.color = 'var(--md-accent)';
+        
+        // Add cancel button
+        const existingCancelBtn = document.getElementById('md-cancel-download-btn');
+        if (!existingCancelBtn) {
+          const cancelBtn = document.createElement('button');
+          cancelBtn.id = 'md-cancel-download-btn';
+          cancelBtn.textContent = 'Cancel Download';
+          cancelBtn.className = 'md-btn md-btn-ghost';
+          cancelBtn.style.fontSize = '11px';
+          cancelBtn.style.color = 'var(--md-danger)';
+          cancelBtn.style.marginTop = '4px';
+          
+          cancelBtn.onclick = async () => {
+            if (!window.modelManager?.cancelDownload || !currentDownloadId) return;
+            
+            const confirmed = confirm('Are you sure you want to cancel this download?');
+            if (!confirmed) return;
+            
+            cancelBtn.disabled = true;
+            cancelBtn.textContent = 'Cancelling...';
+            
+            const result = await window.modelManager.cancelDownload(currentDownloadId);
+            
+            if (result.ok) {
+              hfStatus.textContent = 'Download cancelled';
+              hfStatus.style.color = 'var(--md-text-muted)';
+              progressBarContainer.style.display = 'none';
+              cancelBtn.remove();
+              currentDownloadId = null;
+            } else {
+              cancelBtn.disabled = false;
+              cancelBtn.textContent = 'Cancel Download';
+              hfStatus.textContent = `Failed to cancel: ${result.error || 'unknown error'}`;
+              hfStatus.style.color = 'var(--md-danger)';
+            }
+          };
+          
+          hfStatus.parentElement?.insertBefore(cancelBtn, hfStatus.nextSibling);
+        }
       } else if (p.type === 'download-progress' && p.totalBytes) {
         const percent = ((p.receivedBytes || 0) / p.totalBytes) * 100;
         progressBarFill.style.width = `${Math.min(99, percent).toFixed(1)}%`;
@@ -1568,6 +1658,12 @@ function buildDownloadModelsUI() {
         progressBarFill.style.width = '100%';
         hfStatus.textContent = `Download complete for ${p.id}. Model is now available!`;
         hfStatus.style.color = 'var(--md-accent)';
+        currentDownloadId = null;
+        
+        // Remove cancel button
+        const cancelBtn = document.getElementById('md-cancel-download-btn');
+        if (cancelBtn) cancelBtn.remove();
+        
         setTimeout(() => {
           progressBarContainer.style.display = 'none';
         }, 3000);
@@ -1575,6 +1671,11 @@ function buildDownloadModelsUI() {
         progressBarContainer.style.display = 'none';
         hfStatus.textContent = `Error downloading ${p.id}: ${p.message || ''}`;
         hfStatus.style.color = 'var(--md-danger)';
+        currentDownloadId = null;
+        
+        // Remove cancel button
+        const cancelBtn = document.getElementById('md-cancel-download-btn');
+        if (cancelBtn) cancelBtn.remove();
       } else if (p.message) {
         hfStatus.textContent = p.message;
       }

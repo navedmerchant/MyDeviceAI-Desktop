@@ -11,9 +11,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
+import type { ClientRequest } from 'http';
 import { MODEL_DIR, MODELS_STATE_FILE, LlamaSetupProgress } from './llamaSetup';
 
 const LOG_PREFIX = '[ModelManager]';
+
+// Track active downloads for cancellation support
+const activeDownloads = new Map<string, { request: ClientRequest | null; aborted: boolean }>();
 
 function logInfo(message: string, extra?: Record<string, unknown>): void {
   if (extra) {
@@ -567,6 +571,7 @@ export async function searchHfGgufModels(
 async function downloadFile(
   url: string,
   destPath: string,
+  downloadId: string,
   onProgress?: (received: number, total?: number) => void,
   maxRedirects = 5,
 ): Promise<void> {
@@ -574,6 +579,13 @@ async function downloadFile(
     let redirectCount = 0;
 
     const doDownload = (currentUrl: string) => {
+      // Check if download was cancelled before starting
+      const downloadState = activeDownloads.get(downloadId);
+      if (downloadState?.aborted) {
+        reject(new Error('Download cancelled by user'));
+        return;
+      }
+
       const req = https.get(
         currentUrl,
         {
@@ -582,6 +594,10 @@ async function downloadFile(
           },
         },
         (res) => {
+          // Store request for cancellation
+          if (downloadState) {
+            downloadState.request = req;
+          }
           // Handle redirects
           if (
             res.statusCode &&
@@ -634,6 +650,17 @@ async function downloadFile(
           onProgress?.(0, total);
 
           res.on('data', (chunk: Buffer) => {
+            // Check for cancellation during download
+            if (downloadState?.aborted) {
+              req.destroy();
+              file.close();
+              fs.unlink(destPath, () => {
+                // ignore cleanup error
+              });
+              reject(new Error('Download cancelled by user'));
+              return;
+            }
+            
             received += chunk.length;
             file.write(chunk);
             onProgress?.(received, total);
@@ -641,6 +668,8 @@ async function downloadFile(
 
           res.on('end', () => {
             file.end(() => {
+              // Clean up download tracking
+              activeDownloads.delete(downloadId);
               resolve();
             });
           });
@@ -650,6 +679,7 @@ async function downloadFile(
             fs.unlink(destPath, () => {
               // ignore cleanup error
             });
+            activeDownloads.delete(downloadId);
             reject(err);
           });
 
@@ -658,6 +688,7 @@ async function downloadFile(
             fs.unlink(destPath, () => {
               // ignore cleanup error
             });
+            activeDownloads.delete(downloadId);
             reject(err);
           });
         },
@@ -665,6 +696,7 @@ async function downloadFile(
 
       req.on('error', (err) => {
         logError('Network error during download', err, { url: currentUrl });
+        activeDownloads.delete(downloadId);
         reject(err);
       });
 
@@ -704,11 +736,16 @@ export async function downloadHfModel(
 
     logInfo('Starting HF model download', { id, url, destPath });
 
-    // Use the new download helper with progress tracking
-    await downloadFile(
-      url,
-      tmpPath,
-      (received, total) => {
+    // Initialize download tracking
+    activeDownloads.set(id, { request: null, aborted: false });
+
+    try {
+      // Use the new download helper with progress tracking
+      await downloadFile(
+        url,
+        tmpPath,
+        id,
+        (received, total) => {
         if (received === 0) {
           // Download started
           onProgress?.({
@@ -726,8 +763,19 @@ export async function downloadHfModel(
             totalBytes: total,
           });
         }
-      },
-    );
+        },
+      );
+    } catch (err: any) {
+      // Clean up on error
+      activeDownloads.delete(id);
+      
+      // Clean up temp file if it exists
+      if (fs.existsSync(tmpPath)) {
+        fs.unlinkSync(tmpPath);
+      }
+      
+      throw err;
+    }
 
     onProgress?.({
       id,
@@ -813,6 +861,87 @@ export async function downloadHfModel(
       type: 'error',
       message: err?.message || String(err),
     });
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Cancel an ongoing model download
+ */
+export function cancelDownload(id: string): { ok: boolean; error?: string } {
+  try {
+    const downloadState = activeDownloads.get(id);
+    if (!downloadState) {
+      return { ok: false, error: 'No active download found for this model' };
+    }
+
+    logInfo('Cancelling download', { id });
+    
+    // Mark as aborted
+    downloadState.aborted = true;
+    
+    // Abort the request if it exists
+    if (downloadState.request) {
+      downloadState.request.destroy();
+    }
+    
+    // Clean up from map
+    activeDownloads.delete(id);
+    
+    logInfo('Download cancelled successfully', { id });
+    return { ok: true };
+  } catch (err: any) {
+    logError('cancelDownload failed', err, { id });
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Delete a model from the system
+ * - Removes from models state
+ * - Deletes the model file from disk
+ */
+export function deleteModel(id: string): { ok: boolean; error?: string } {
+  try {
+    logInfo('Deleting model', { id });
+    
+    let deletedFilePath: string | null = null;
+    
+    const state = updateState((s) => {
+      const index = s.models.findIndex((m) => m.id === id);
+      if (index === -1) {
+        throw new Error(`Model not found: ${id}`);
+      }
+      
+      const model = s.models[index];
+      
+      // Don't allow deleting the active model
+      if (s.activeModelId === id) {
+        throw new Error('Cannot delete the active model. Please select a different model first.');
+      }
+      
+      // Store file path for deletion
+      deletedFilePath = model.filePath;
+      
+      // Remove from models array
+      s.models.splice(index, 1);
+      
+      // Update lastUsedModelId if it was this model
+      if (s.lastUsedModelId === id) {
+        s.lastUsedModelId = s.activeModelId;
+      }
+    });
+    
+    // Delete the actual file from disk if it exists
+    if (deletedFilePath && fs.existsSync(deletedFilePath)) {
+      fs.unlinkSync(deletedFilePath);
+      logInfo('Model file deleted from disk', { filePath: deletedFilePath });
+    }
+    
+    logInfo('Model deleted successfully', { id, modelCount: state.models.length });
+    return { ok: true };
+  } catch (err: any) {
+    logError('deleteModel failed', err, { id });
     return { ok: false, error: err?.message || String(err) };
   }
 }
