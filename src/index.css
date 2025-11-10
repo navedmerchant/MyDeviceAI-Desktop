@@ -210,6 +210,22 @@ body {
   text-overflow: ellipsis;
 }
 
+.md-active-model-display {
+  font-size: 11px;
+  color: var(--md-text-muted);
+  text-align: center;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+.md-active-model-display #active-model-name {
+  color: var(--md-accent);
+  font-weight: 500;
+}
+
 .md-room-actions {
   display: flex;
   gap: 8px;

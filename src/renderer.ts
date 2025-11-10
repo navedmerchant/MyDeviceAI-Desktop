@@ -579,70 +579,13 @@ function setText(id: string, text: string): void {
   if (node) node.textContent = text;
 }
 
-function ensureLogContainer(): HTMLElement | null {
-  let c = q('log-output');
-  if (!c) {
-    logRendererError('log-output element missing in DOM');
-    return null;
-  }
-  return c;
-}
-
-function appendLog(
-  msg: string,
-  level: 'info' | 'error' = 'info',
-  tag = 'app',
-): void {
-  const root = ensureLogContainer();
-  if (!root) return;
-
-  const line = document.createElement('div');
-  line.className =
-    'md-log-line' + (level === 'error' ? ' md-log-line-error' : '');
-
-  const tagEl = document.createElement('div');
-  tagEl.className = 'md-log-tag';
-  tagEl.textContent = tag.toUpperCase();
-
-  const msgEl = document.createElement('div');
-  msgEl.className = 'md-log-msg';
-  msgEl.textContent = msg;
-
-  line.appendChild(tagEl);
-  line.appendChild(msgEl);
-
-  root.appendChild(line);
-  root.scrollTop = root.scrollHeight;
-}
-
-// Wrap logger helpers to also feed the UI log stream.
+// Logger helpers for console output only (activity log UI removed)
 const uiLog = {
   info(message: string, extra?: Record<string, unknown>) {
     logRenderer(message, extra);
-    const suffix =
-      extra && Object.keys(extra).length
-        ? ' ' + JSON.stringify(extra)
-        : '';
-    appendLog(message + suffix, 'info', 'p2p');
   },
   error(message: string, error?: unknown, extra?: Record<string, unknown>) {
     logRendererError(message, error, extra);
-    const payload: any = {
-      ...(extra || {}),
-    };
-    if (error instanceof Error) {
-      payload.error = {
-        name: error.name,
-        message: error.message,
-      };
-    } else if (error) {
-      payload.error = error;
-    }
-    const suffix =
-      Object.keys(payload).length > 0
-        ? ' ' + JSON.stringify(payload)
-        : '';
-    appendLog(message + suffix, 'error', 'err');
   },
 };
 
@@ -1237,7 +1180,22 @@ function buildModelManagementUI() {
       row.appendChild(name);
       row.appendChild(meta);
 
-      if (m.id === currentSelectedId) {
+      // Highlight active model with distinct styling
+      const isActive = activeModelId === m.id;
+      const isSelected = m.id === currentSelectedId;
+      
+      if (isActive && isSelected) {
+        // Active AND selected - show both highlights
+        row.style.background = 'linear-gradient(135deg, var(--md-accent-soft), rgba(168, 85, 247, 0.14))';
+        row.style.border = '2px solid var(--md-accent)';
+        row.style.boxShadow = '0 0 12px rgba(56, 189, 248, 0.3)';
+      } else if (isActive) {
+        // Active but not selected - subtler green/blue glow
+        row.style.background = 'linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(34, 197, 94, 0.08))';
+        row.style.border = '1px solid rgba(56, 189, 248, 0.5)';
+        row.style.boxShadow = '0 0 8px rgba(56, 189, 248, 0.2)';
+      } else if (isSelected) {
+        // Selected but not active
         row.style.background = 'var(--md-accent-soft)';
         row.style.border = '1px solid var(--md-accent)';
       } else {
@@ -1246,14 +1204,31 @@ function buildModelManagementUI() {
       }
 
       row.onmouseenter = () => {
-        if (m.id !== currentSelectedId) {
+        const isActive = activeModelId === m.id;
+        const isSelected = m.id === currentSelectedId;
+        
+        if (!isSelected && !isActive) {
           row.style.background = 'rgba(15, 23, 42, 0.9)';
           row.style.borderColor = 'var(--md-border-strong)';
         }
       };
 
       row.onmouseleave = () => {
-        if (m.id !== currentSelectedId) {
+        const isActive = activeModelId === m.id;
+        const isSelected = m.id === currentSelectedId;
+        
+        if (isActive && isSelected) {
+          row.style.background = 'linear-gradient(135deg, var(--md-accent-soft), rgba(168, 85, 247, 0.14))';
+          row.style.border = '2px solid var(--md-accent)';
+          row.style.boxShadow = '0 0 12px rgba(56, 189, 248, 0.3)';
+        } else if (isActive) {
+          row.style.background = 'linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(34, 197, 94, 0.08))';
+          row.style.border = '1px solid rgba(56, 189, 248, 0.5)';
+          row.style.boxShadow = '0 0 8px rgba(56, 189, 248, 0.2)';
+        } else if (isSelected) {
+          row.style.background = 'var(--md-accent-soft)';
+          row.style.border = '1px solid var(--md-accent)';
+        } else {
           row.style.background = 'rgba(15, 23, 42, 0.6)';
           row.style.borderColor = 'var(--md-border-subtle)';
         }
@@ -1407,7 +1382,14 @@ function buildModelManagementUI() {
         detailsBody.appendChild(errorMsg);
       } else {
         uiLog.info('Active model changed', { id: model.id });
+        // Refresh the list to show updated active state
         await refreshList();
+        // Re-render details for the now-active model
+        const { models, activeModelId } = await window.modelManager.list();
+        const updatedModel = models.find((m) => m.id === model.id);
+        if (updatedModel) {
+          renderDetails(updatedModel, activeModelId);
+        }
       }
     };
 
@@ -1859,11 +1841,34 @@ window.addEventListener('DOMContentLoaded', async () => {
   // If installed, expose two separate controls in the top-right:
   // 1. "Models" - for managing/selecting installed models
   // 2. "Download Models" - for searching and downloading from HuggingFace
+  // Update active model display in room section
+  const updateActiveModelDisplay = async () => {
+    const activeModelNameEl = document.getElementById('active-model-name');
+    if (!activeModelNameEl || !window.modelManager?.getActive) return;
+    
+    try {
+      const { model } = await window.modelManager.getActive();
+      if (model) {
+        activeModelNameEl.textContent = model.displayName || model.id;
+        activeModelNameEl.title = `Active model: ${model.displayName || model.id}`;
+      } else {
+        activeModelNameEl.textContent = 'none selected';
+        activeModelNameEl.style.color = 'var(--md-danger)';
+      }
+    } catch (err) {
+      activeModelNameEl.textContent = 'error loading model';
+      activeModelNameEl.style.color = 'var(--md-danger)';
+    }
+  };
+
+  // Initial update
+  void updateActiveModelDisplay();
+
   const header = document.querySelector('.md-topbar-right');
   if (header) {
     const modelsBtn = document.createElement('button');
-    modelsBtn.textContent = 'Models';
-    modelsBtn.className = 'md-btn md-btn-ghost';
+    modelsBtn.textContent = 'Manage Models';
+    modelsBtn.className = 'md-btn';
     modelsBtn.style.marginLeft = '8px';
     modelsBtn.onclick = () => {
       buildModelManagementUI();

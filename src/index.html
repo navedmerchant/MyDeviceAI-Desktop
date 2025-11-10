@@ -25,6 +25,9 @@
           <div class="md-room-label">Room ID</div>
           <code id="room-id" class="md-room-id">initializing...</code>
         </div>
+        <div id="active-model-display" class="md-active-model-display">
+          Active Model: <span id="active-model-name">loading...</span>
+        </div>
         <div class="md-room-actions">
           <button id="new-room-btn" class="md-btn">New Room</button>
           <button id="copy-room-btn" class="md-btn md-btn-ghost">Copy ID</button>
@@ -32,16 +35,10 @@
       </section>
  
       <!-- 3. Connected Peers -->
-      <section class="md-card md-peers-card md-stack-section">
-        <div class="md-section-label">Connected Peers</div>
-        <div id="peer-list" class="md-peer-list" data-empty="1"></div>
-      </section>
-
-      <!-- 4. Log output (required by renderer.ts / uiLog) -->
-      <section class="md-card md-stack-section">
-        <div class="md-section-label">Activity Log</div>
-        <div id="log-output" class="md-log-container"></div>
-      </section>
+     <section class="md-card md-peers-card md-stack-section">
+       <div class="md-section-label">Connected Peers</div>
+       <div id="peer-list" class="md-peer-list" data-empty="1"></div>
+     </section>
     </div>
   </body>
 </html>
