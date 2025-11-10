@@ -153,6 +153,7 @@ function createP2PCFClient(roomId: string): any {
     | { t: 'prompt'; id: string; prompt: string; max_tokens?: number }
     | { t: 'start'; id: string }
     | { t: 'token'; id: string; tok: string }
+    | { t: 'reasoning_token'; id: string; tok: string }
     | { t: 'end'; id: string }
     | { t: 'error'; id: string; message: string }
     | { t: string; [k: string]: any };
@@ -260,22 +261,31 @@ function createP2PCFClient(roomId: string): any {
         if (doneReading) {
           if (buffer.trim().length > 0) {
             const line = buffer.trim();
-            let tok: string | undefined;
+            let contentTok: string | undefined;
+            let reasoningTok: string | undefined;
             try {
               const json = JSON.parse(line);
-              tok =
+              contentTok =
                 json.choices?.[0]?.delta?.content ??
-                json.choices?.[0]?.delta?.reasoning_content ??
                 json.choices?.[0]?.message?.content ??
                 undefined;
+              reasoningTok =
+                json.choices?.[0]?.delta?.reasoning_content ?? undefined;
             } catch {
-              tok = line;
+              contentTok = line;
             }
-            if (tok) {
+            if (reasoningTok) {
+              await sendJsonSafe(peer, {
+                t: 'reasoning_token',
+                id,
+                tok: String(reasoningTok),
+              });
+            }
+            if (contentTok) {
               await sendJsonSafe(peer, {
                 t: 'token',
                 id,
-                tok: String(tok),
+                tok: String(contentTok),
               });
             }
           }
@@ -303,24 +313,34 @@ function createP2PCFClient(roomId: string): any {
               return;
             }
 
-            let tok: string | undefined;
+            let contentTok: string | undefined;
+            let reasoningTok: string | undefined;
 
             try {
               const json = JSON.parse(jsonStr);
-              tok =
+              contentTok =
                 json.choices?.[0]?.delta?.content ??
-                json.choices?.[0]?.delta?.reasoning_content ??
                 json.choices?.[0]?.message?.content ??
                 undefined;
+              reasoningTok =
+                json.choices?.[0]?.delta?.reasoning_content ?? undefined;
 
               const done =
                 json.done === true || !!json.choices?.[0]?.finish_reason;
 
-              if (tok) {
+              if (reasoningTok) {
+                await sendJsonSafe(peer, {
+                  t: 'reasoning_token',
+                  id,
+                  tok: String(reasoningTok),
+                });
+              }
+
+              if (contentTok) {
                 await sendJsonSafe(peer, {
                   t: 'token',
                   id,
-                  tok: String(tok),
+                  tok: String(contentTok),
                 });
               }
 
@@ -339,23 +359,33 @@ function createP2PCFClient(roomId: string): any {
             continue;
           } else if (line) {
             // Try parsing non-SSE format as fallback
-            let tok: string | undefined;
+            let contentTok: string | undefined;
+            let reasoningTok: string | undefined;
             try {
               const json = JSON.parse(line);
-              tok =
+              contentTok =
                 json.choices?.[0]?.delta?.content ??
-                json.choices?.[0]?.delta?.reasoning_content ??
                 json.choices?.[0]?.message?.content ??
                 undefined;
+              reasoningTok =
+                json.choices?.[0]?.delta?.reasoning_content ?? undefined;
 
               const done =
                 json.done === true || !!json.choices?.[0]?.finish_reason;
 
-              if (tok) {
+              if (reasoningTok) {
+                await sendJsonSafe(peer, {
+                  t: 'reasoning_token',
+                  id,
+                  tok: String(reasoningTok),
+                });
+              }
+
+              if (contentTok) {
                 await sendJsonSafe(peer, {
                   t: 'token',
                   id,
-                  tok: String(tok),
+                  tok: String(contentTok),
                 });
               }
 
