@@ -1997,22 +1997,22 @@ window.addEventListener('DOMContentLoaded', async () => {
         uiLog.info('Managed llama-server is running', {
           endpoint: status.endpoint,
         });
-        updateLlamaStatus('Engine: ready', 'ok');
+        updateLlamaStatus('Runtime: ready', 'ok');
       } else {
         uiLog.error('Failed to ensure llama-server', undefined, {
           error: status.error,
         });
-        updateLlamaStatus('Engine: unavailable', 'warn');
+        updateLlamaStatus('Runtime: unavailable', 'warn');
       }
     } catch (err: any) {
       uiLog.error('Error while ensuring llama-server', err);
-      updateLlamaStatus('Engine: error', 'warn');
+      updateLlamaStatus('Runtime: error', 'warn');
     }
   } else {
     uiLog.info(
       'llama.ensureServer bridge not available; skipping server ensure',
     );
-    updateLlamaStatus('Engine: bridge missing', 'warn');
+    updateLlamaStatus('Runtime: bridge missing', 'warn');
   }
 
   uiLog.info('Initializing main P2PCF UI');
