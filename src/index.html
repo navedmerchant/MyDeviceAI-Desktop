@@ -30,11 +30,17 @@
           <button id="copy-room-btn" class="md-btn md-btn-ghost">Copy ID</button>
         </div>
       </section>
-
+ 
       <!-- 3. Connected Peers -->
       <section class="md-card md-peers-card md-stack-section">
         <div class="md-section-label">Connected Peers</div>
-        <div id="peer-list" class="md-peer-list"></div>
+        <div id="peer-list" class="md-peer-list" data-empty="1"></div>
+      </section>
+
+      <!-- 4. Log output (required by renderer.ts / uiLog) -->
+      <section class="md-card md-stack-section">
+        <div class="md-section-label">Activity Log</div>
+        <div id="log-output" class="md-log-container"></div>
       </section>
     </div>
   </body>

@@ -249,6 +249,92 @@ contextBridge.exposeInMainWorld('llama', {
   },
 });
 
+/**
+ * Model management bridge
+ * - Wraps the IPC handlers from src/index.ts.
+ */
+contextBridge.exposeInMainWorld('modelManager', {
+  list: async () => {
+    logPreload('modelManager.list invoke');
+    return ipcRenderer.invoke('models-list');
+  },
+
+  getActive: async () => {
+    logPreload('modelManager.getActive invoke');
+    return ipcRenderer.invoke('models-get-active');
+  },
+
+  setActive: async (id: string) => {
+    logPreload('modelManager.setActive invoke', { id });
+    return ipcRenderer.invoke('models-set-active', { id });
+  },
+
+  updateParams: async (
+    id: string,
+    params: {
+      temperature?: number;
+      topP?: number;
+      topK?: number;
+      maxTokens?: number;
+      contextWindow?: number;
+      gpuLayers?: number;
+    },
+  ) => {
+    logPreload('modelManager.updateParams invoke', { id, params });
+    return ipcRenderer.invoke('models-update-params', { id, params });
+  },
+
+  searchHfGguf: async (query: string) => {
+    logPreload('modelManager.searchHfGguf invoke', { query });
+    return ipcRenderer.invoke('models-search-hf-gguf', { query });
+  },
+
+  listHfFiles: async (repoId: string) => {
+    logPreload('modelManager.listHfFiles invoke', { repoId });
+    return ipcRenderer.invoke('models-list-hf-gguf-files', { repoId });
+  },
+
+  downloadHf: async (options: {
+    repoId: string;
+    fileName: string;
+    displayName?: string;
+    quantization?: string;
+    contextWindow?: number;
+  }) => {
+    logPreload('modelManager.downloadHf invoke', {
+      repoId: options?.repoId,
+      fileName: options?.fileName,
+    });
+    return ipcRenderer.invoke('models-download-hf', options);
+  },
+
+  onDownloadProgress: (
+    handler: (p: {
+      id: string;
+      type:
+        | 'status'
+        | 'download-start'
+        | 'download-progress'
+        | 'download-complete'
+        | 'install-complete'
+        | 'error';
+      message?: string;
+      url?: string;
+      totalBytes?: number;
+      receivedBytes?: number;
+      filePath?: string;
+    }) => void,
+  ) => {
+    const listener = (_event: any, payload: any) => {
+      handler(payload);
+    };
+    ipcRenderer.on('models-download-progress', listener);
+    return () => {
+      ipcRenderer.removeListener('models-download-progress', listener);
+    };
+  },
+});
+
 // Keep the original docs as comments for reference:
 // See the Electron documentation for details on how to use preload scripts:
 // https://www.electronjs.org/docs/latest/tutorial/process-model#preload-scripts

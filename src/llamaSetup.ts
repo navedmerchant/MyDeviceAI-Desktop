@@ -11,6 +11,7 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
+import { getActiveModel } from './modelManager';
 
 const LOG_PREFIX = '[LlamaSetup]';
 
@@ -61,12 +62,14 @@ const QWEN3_MODEL_URL =
 const INSTALL_ROOT = path.join(app.getPath('userData'), 'llama');
 const INSTALL_DIR = path.join(INSTALL_ROOT, 'bin');
 const METADATA_FILE = path.join(INSTALL_ROOT, 'install.json');
-const MODEL_DIR = path.join(INSTALL_ROOT, 'models');
+export const MODEL_DIR = path.join(INSTALL_ROOT, 'models');
+export const MODELS_STATE_FILE = path.join(INSTALL_ROOT, 'models.json');
 const QWEN3_MODEL_PATH = path.join(MODEL_DIR, 'Qwen3-4B-Q4_K_M.gguf');
 
 
 let llamaServerProcess: import('child_process').ChildProcessWithoutNullStreams | null = null;
 let llamaServerPort: number | null = null;
+let llamaServerCurrentModelPath: string | null = null;
 
 type Platform = 'windows' | 'linux' | 'macos';
 type Arch = 'x64' | 'arm64';
@@ -718,13 +721,40 @@ export async function ensureLlamaServer(
 ): Promise<{ ok: true; endpoint: string } | { ok: false; error: string }> {
   logDebug('ensureLlamaServer invoked');
 
-  // Reuse existing managed server if still running.
-  if (llamaServerProcess && llamaServerPort) {
+  // Determine which model should be running
+  let modelPath: string;
+  const activeModel = getActiveModel();
+  if (activeModel && activeModel.installed && activeModel.filePath) {
+    modelPath = activeModel.filePath;
+    logDebug('ensureLlamaServer: active model from model manager', {
+      modelId: activeModel.id,
+      modelPath,
+    });
+  } else {
+    // Fall back to default Qwen3 model
+    modelPath = await downloadModelIfNeeded(onProgress);
+    logDebug('ensureLlamaServer: no active model found, using default Qwen3', {
+      modelPath,
+    });
+  }
+
+  // Check if server is running with the correct model
+  if (llamaServerProcess && llamaServerPort && llamaServerCurrentModelPath === modelPath) {
     const endpoint = `http://localhost:${llamaServerPort}`;
-    logDebug('ensureLlamaServer: reusing existing managed llama-server', {
+    logDebug('ensureLlamaServer: reusing existing managed llama-server with correct model', {
       endpoint,
+      modelPath,
     });
     return { ok: true, endpoint };
+  }
+
+  // If server is running but with wrong model, stop it
+  if (llamaServerProcess && llamaServerCurrentModelPath !== modelPath) {
+    logDebug('ensureLlamaServer: active model changed, restarting server', {
+      oldModel: llamaServerCurrentModelPath,
+      newModel: modelPath,
+    });
+    stopLlamaServer();
   }
 
   // Ensure llama binary exists (install once if needed).
@@ -735,20 +765,20 @@ export async function ensureLlamaServer(
     return { ok: false, error };
   }
 
-  // Ensure default model is available.
-  const modelPath = await downloadModelIfNeeded(onProgress);
-
-  // Spawn llama-server once and cache the process/port.
+  // Spawn llama-server with the active model
   try {
     const { port } = await spawnLlamaServer(install.binaryPath, modelPath);
+    llamaServerCurrentModelPath = modelPath;
     const endpoint = `http://localhost:${port}`;
+    const modelName = activeModel?.displayName || 'Qwen3-4B-Q4_K_M.gguf';
     logDebug('ensureLlamaServer: started new managed llama-server', {
       endpoint,
       modelPath,
+      modelName,
     });
     onProgress?.({
       type: 'status',
-      message: `llama-server running at ${endpoint} with Qwen3-4B-Q4_K_M.gguf`,
+      message: `llama-server running at ${endpoint} with ${modelName}`,
     });
     return { ok: true, endpoint };
   } catch (err: any) {
@@ -782,6 +812,7 @@ export function stopLlamaServer(): void {
   } finally {
     llamaServerProcess = null;
     llamaServerPort = null;
+    llamaServerCurrentModelPath = null;
   }
 }
 

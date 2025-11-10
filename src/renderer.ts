@@ -993,11 +993,694 @@ function renderMainUI() {
   document.location.href = target;
 }
 
+declare global {
+  interface Window {
+    modelManager?: {
+      list: () => Promise<{
+        models: {
+          id: string;
+          displayName: string;
+          filePath: string;
+          installed: boolean;
+          currentParams: {
+            temperature: number;
+            topP: number;
+            topK: number;
+            maxTokens: number;
+            contextWindow: number;
+            gpuLayers: number;
+          };
+        }[];
+        activeModelId: string | null;
+      }>;
+      getActive: () => Promise<{
+        model: {
+          id: string;
+          displayName: string;
+          filePath: string;
+          installed: boolean;
+          currentParams: {
+            temperature: number;
+            topP: number;
+            topK: number;
+            maxTokens: number;
+            contextWindow: number;
+            gpuLayers: number;
+          };
+        } | null;
+      }>;
+      setActive: (
+        id: string,
+      ) => Promise<{ ok: boolean; activeModelId?: string; error?: string }>;
+      updateParams: (
+        id: string,
+        params: {
+          temperature?: number;
+          topP?: number;
+          topK?: number;
+          maxTokens?: number;
+          contextWindow?: number;
+          gpuLayers?: number;
+        },
+      ) => Promise<{ ok: boolean; error?: string }>;
+      searchHfGguf: (
+        query: string,
+      ) => Promise<{ ok: true; results: any[] } | { ok: false; error: string }>;
+      listHfFiles: (
+        repoId: string,
+      ) => Promise<
+        | { ok: true; files: { name: string; size?: number }[] }
+        | { ok: false; error: string }
+      >;
+      downloadHf: (options: {
+        repoId: string;
+        fileName: string;
+        displayName?: string;
+        quantization?: string;
+        contextWindow?: number;
+      }) => Promise<{ ok: boolean; error?: string }>;
+      onDownloadProgress: (
+        handler: (p: {
+          id: string;
+          type:
+            | 'status'
+            | 'download-start'
+            | 'download-progress'
+            | 'download-complete'
+            | 'install-complete'
+            | 'error';
+          message?: string;
+          url?: string;
+          totalBytes?: number;
+          receivedBytes?: number;
+          filePath?: string;
+        }) => void,
+      ) => () => void;
+    };
+  }
+}
+
+/**
+ * Simple in-renderer Model Management screen implementation.
+ * - Toggle between main P2P UI and Models UI.
+ * - Uses window.modelManager for data + HF search & download.
+ */
+
+function renderMainP2PUI() {
+  const target = document.location.origin + document.location.pathname;
+  logRenderer('Navigating to main UI', { target });
+  document.location.href = target;
+}
+
+function buildModelManagementUI() {
+  const root = document.body;
+  root.innerHTML = '';
+
+  const container = document.createElement('div');
+  container.style.display = 'flex';
+  container.style.flexDirection = 'column';
+  container.style.height = '100vh';
+  container.style.fontFamily =
+    'system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
+  container.style.padding = '16px';
+  container.style.boxSizing = 'border-box';
+
+  const header = document.createElement('div');
+  header.style.display = 'flex';
+  header.style.justifyContent = 'space-between';
+  header.style.alignItems = 'center';
+  header.style.marginBottom = '12px';
+
+  const title = document.createElement('div');
+  title.textContent = 'Model Management';
+  title.style.fontSize = '18px';
+  title.style.fontWeight = '600';
+
+  const backBtn = document.createElement('button');
+  backBtn.textContent = 'Back to Main';
+  backBtn.style.padding = '6px 10px';
+  backBtn.style.borderRadius = '4px';
+  backBtn.style.border = '1px solid #d1d5db';
+  backBtn.style.background = '#fff';
+  backBtn.style.cursor = 'pointer';
+  backBtn.onclick = () => {
+    renderMainP2PUI();
+  };
+
+  header.appendChild(title);
+  header.appendChild(backBtn);
+
+  const layout = document.createElement('div');
+  layout.style.display = 'grid';
+  layout.style.gridTemplateColumns = '260px 1fr';
+  layout.style.gridGap = '16px';
+  layout.style.flex = '1 1 auto';
+  layout.style.minHeight = '0';
+
+  // Left: Installed models list
+  const leftPanel = document.createElement('div');
+  leftPanel.style.border = '1px solid #e5e7eb';
+  leftPanel.style.borderRadius = '6px';
+  leftPanel.style.padding = '8px';
+  leftPanel.style.overflowY = 'auto';
+
+  const leftTitle = document.createElement('div');
+  leftTitle.textContent = 'Installed Models';
+  leftTitle.style.fontSize = '14px';
+  leftTitle.style.fontWeight = '600';
+  leftTitle.style.marginBottom = '8px';
+  leftPanel.appendChild(leftTitle);
+
+  const modelListEl = document.createElement('div');
+  modelListEl.id = 'md-model-list';
+  leftPanel.appendChild(modelListEl);
+
+  // Right: Details + HF search/download
+  const rightPanel = document.createElement('div');
+  rightPanel.style.display = 'flex';
+  rightPanel.style.flexDirection = 'column';
+  rightPanel.style.gap = '12px';
+
+  const detailsCard = document.createElement('div');
+  detailsCard.style.border = '1px solid #e5e7eb';
+  detailsCard.style.borderRadius = '6px';
+  detailsCard.style.padding = '8px';
+  detailsCard.id = 'md-model-details';
+
+  const detailsTitle = document.createElement('div');
+  detailsTitle.textContent = 'Model Details';
+  detailsTitle.style.fontSize = '14px';
+  detailsTitle.style.fontWeight = '600';
+  detailsTitle.style.marginBottom = '6px';
+  detailsCard.appendChild(detailsTitle);
+
+  const detailsBody = document.createElement('div');
+  detailsBody.id = 'md-model-details-body';
+  detailsBody.textContent = 'Select a model from the left.';
+  detailsBody.style.fontSize = '13px';
+  detailsCard.appendChild(detailsBody);
+
+  const hfCard = document.createElement('div');
+  hfCard.style.border = '1px solid #e5e7eb';
+  hfCard.style.borderRadius = '6px';
+  hfCard.style.padding = '8px';
+
+  const hfTitle = document.createElement('div');
+  hfTitle.textContent = 'Add GGUF Model from Hugging Face';
+  hfTitle.style.fontSize = '14px';
+  hfTitle.style.fontWeight = '600';
+  hfTitle.style.marginBottom = '6px';
+
+  const hfSearchRow = document.createElement('div');
+  hfSearchRow.style.display = 'flex';
+  hfSearchRow.style.gap = '6px';
+  hfSearchRow.style.marginBottom = '4px';
+
+  const hfSearchInput = document.createElement('input');
+  hfSearchInput.type = 'text';
+  hfSearchInput.placeholder = 'Search GGUF models (e.g. "Qwen 7B")';
+  hfSearchInput.style.flex = '1';
+  hfSearchInput.style.fontSize = '13px';
+  hfSearchInput.style.padding = '6px 8px';
+
+  const hfSearchButton = document.createElement('button');
+  hfSearchButton.textContent = 'Search';
+  hfSearchButton.style.padding = '6px 10px';
+  hfSearchButton.style.fontSize = '13px';
+  hfSearchButton.style.borderRadius = '4px';
+  hfSearchButton.style.border = '1px solid #d1d5db';
+  hfSearchButton.style.background = '#f9fafb';
+  hfSearchButton.style.cursor = 'pointer';
+
+  hfSearchRow.appendChild(hfSearchInput);
+  hfSearchRow.appendChild(hfSearchButton);
+
+  const hfResults = document.createElement('div');
+  hfResults.id = 'md-hf-results';
+  hfResults.style.maxHeight = '200px';
+  hfResults.style.overflowY = 'auto';
+  hfResults.style.marginBottom = '8px';
+  hfResults.style.fontSize = '12px';
+
+  const hfStatus = document.createElement('div');
+  hfStatus.id = 'md-hf-status';
+  hfStatus.style.fontSize = '12px';
+  hfStatus.style.color = '#6b7280';
+  hfStatus.style.marginTop = '4px';
+  hfStatus.style.minHeight = '20px';
+  
+  // Progress bar for downloads
+  const progressBarContainer = document.createElement('div');
+  progressBarContainer.id = 'md-download-progress-container';
+  progressBarContainer.style.width = '100%';
+  progressBarContainer.style.height = '6px';
+  progressBarContainer.style.background = '#e5e7eb';
+  progressBarContainer.style.borderRadius = '3px';
+  progressBarContainer.style.overflow = 'hidden';
+  progressBarContainer.style.marginTop = '4px';
+  progressBarContainer.style.display = 'none';
+
+  const progressBarFill = document.createElement('div');
+  progressBarFill.id = 'md-download-progress-fill';
+  progressBarFill.style.width = '0%';
+  progressBarFill.style.height = '100%';
+  progressBarFill.style.background = '#2563eb';
+  progressBarFill.style.transition = 'width 0.2s ease';
+  
+  progressBarContainer.appendChild(progressBarFill);
+
+  hfCard.appendChild(hfTitle);
+  hfCard.appendChild(hfSearchRow);
+  hfCard.appendChild(hfResults);
+  hfCard.appendChild(progressBarContainer);
+  hfCard.appendChild(hfStatus);
+
+  layout.appendChild(leftPanel);
+  layout.appendChild(rightPanel);
+
+  rightPanel.appendChild(detailsCard);
+  rightPanel.appendChild(hfCard);
+
+  container.appendChild(header);
+  container.appendChild(layout);
+
+  root.appendChild(container);
+
+  let currentSelectedId: string | null = null;
+  const unsubscribeProgress =
+    window.modelManager?.onDownloadProgress?.((p) => {
+      if (p.type === 'download-start') {
+        progressBarContainer.style.display = 'block';
+        progressBarFill.style.width = '0%';
+        hfStatus.textContent = `Downloading ${p.id}...`;
+      } else if (p.type === 'download-progress' && p.totalBytes) {
+        const percent = ((p.receivedBytes || 0) / p.totalBytes) * 100;
+        progressBarFill.style.width = `${Math.min(99, percent).toFixed(1)}%`;
+        const mbReceived = ((p.receivedBytes || 0) / (1024 * 1024)).toFixed(1);
+        const mbTotal = (p.totalBytes / (1024 * 1024)).toFixed(1);
+        hfStatus.textContent = `Downloading ${p.id}: ${mbReceived}MB / ${mbTotal}MB`;
+      } else if (p.type === 'download-complete') {
+        progressBarFill.style.width = '100%';
+        hfStatus.textContent = `Download complete for ${p.id}`;
+        setTimeout(() => {
+          progressBarContainer.style.display = 'none';
+        }, 2000);
+      } else if (p.type === 'error') {
+        progressBarContainer.style.display = 'none';
+        hfStatus.textContent = `Error downloading ${p.id}: ${p.message || ''}`;
+      } else if (p.message) {
+        hfStatus.textContent = p.message;
+      }
+    }) || null;
+
+  const refreshList = async () => {
+    if (!window.modelManager?.list) return;
+    const { models, activeModelId } = await window.modelManager.list();
+    modelListEl.innerHTML = '';
+
+    if (!models.length) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No models registered yet.';
+      empty.style.fontSize = '12px';
+      empty.style.color = '#6b7280';
+      modelListEl.appendChild(empty);
+      return;
+    }
+
+    models.forEach((m) => {
+      const row = document.createElement('div');
+      row.style.padding = '6px';
+      row.style.marginBottom = '3px';
+      row.style.borderRadius = '4px';
+      row.style.cursor = 'pointer';
+      row.style.display = 'flex';
+      row.style.flexDirection = 'column';
+      row.style.gap = '3px';
+      row.dataset.id = m.id;
+
+      const name = document.createElement('div');
+      name.textContent = m.displayName || m.id;
+      name.style.fontSize = '13px';
+      name.style.fontWeight = '500';
+
+      const meta = document.createElement('div');
+      meta.style.fontSize = '11px';
+      meta.style.color = '#6b7280';
+      meta.textContent = `${
+        m.installed ? 'installed' : 'not installed'
+      }${activeModelId === m.id ? ' • active' : ''}`;
+
+      row.appendChild(name);
+      row.appendChild(meta);
+
+      if (m.id === currentSelectedId) {
+        row.style.backgroundColor = '#dbeafe';
+        row.style.border = '1px solid #93c5fd';
+      } else {
+        row.style.border = '1px solid transparent';
+      }
+
+      row.onclick = () => {
+        currentSelectedId = m.id;
+        renderDetails(m, activeModelId);
+        refreshList();
+      };
+
+      modelListEl.appendChild(row);
+    });
+  };
+
+  const renderDetails = (
+    model: {
+      id: string;
+      displayName: string;
+      installed: boolean;
+      currentParams: {
+        temperature: number;
+        topP: number;
+        topK: number;
+        maxTokens: number;
+        contextWindow: number;
+        gpuLayers: number;
+      };
+    },
+    activeModelId: string | null,
+  ) => {
+    detailsBody.innerHTML = '';
+
+    const titleEl = document.createElement('div');
+    titleEl.textContent = model.displayName || model.id;
+    titleEl.style.fontSize = '14px';
+    titleEl.style.fontWeight = '600';
+    titleEl.style.marginBottom = '4px';
+
+    const statusEl = document.createElement('div');
+    statusEl.style.fontSize = '12px';
+    statusEl.style.marginBottom = '6px';
+    statusEl.style.color = '#6b7280';
+    statusEl.textContent = `${
+      model.installed ? 'Installed' : 'Not installed'
+    }${activeModelId === model.id ? ' • Active model' : ''}`;
+
+    const paramsForm = document.createElement('div');
+    paramsForm.style.display = 'grid';
+    paramsForm.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
+    paramsForm.style.gap = '6px';
+    paramsForm.style.fontSize = '11px';
+
+    type ParamKey = keyof typeof model.currentParams;
+    const paramLabels: Record<ParamKey, string> = {
+      temperature: 'Temp',
+      topP: 'top_p',
+      topK: 'top_k',
+      maxTokens: 'Max tokens',
+      contextWindow: 'Ctx window',
+      gpuLayers: 'GPU layers',
+    };
+
+    const inputs: Partial<Record<ParamKey, HTMLInputElement>> = {};
+
+    (Object.keys(model.currentParams) as ParamKey[]).forEach((key) => {
+      const wrap = document.createElement('label');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.gap = '1px';
+
+      const lab = document.createElement('div');
+      lab.textContent = paramLabels[key];
+      lab.style.color = '#6b7280';
+      lab.style.fontSize = '11px';
+
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.value = String(model.currentParams[key]);
+      input.style.fontSize = '12px';
+      input.style.padding = '4px 6px';
+      input.style.borderRadius = '3px';
+      input.style.border = '1px solid #d1d5db';
+
+      inputs[key] = input;
+
+      wrap.appendChild(lab);
+      wrap.appendChild(input);
+      paramsForm.appendChild(wrap);
+    });
+
+    const actionsRow = document.createElement('div');
+    actionsRow.style.marginTop = '4px';
+    actionsRow.style.display = 'flex';
+    actionsRow.style.gap = '6px';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save Params';
+    saveBtn.style.padding = '6px 10px';
+    saveBtn.style.fontSize = '12px';
+    saveBtn.style.borderRadius = '4px';
+    saveBtn.style.border = '1px solid #d1d5db';
+    saveBtn.style.background = '#f3f4f6';
+    saveBtn.style.cursor = 'pointer';
+
+    saveBtn.onclick = async () => {
+      if (!window.modelManager?.updateParams) return;
+      const params: any = {};
+      (Object.keys(inputs) as ParamKey[]).forEach((k) => {
+        const v = inputs[k]?.value;
+        if (v !== undefined) {
+          const num = Number(v);
+          if (!Number.isNaN(num)) params[k] = num;
+        }
+      });
+      const res = await window.modelManager.updateParams(model.id, params);
+      if (!res.ok) {
+        detailsBody.appendChild(
+          document.createTextNode(
+            ` Failed to update params: ${res.error || 'unknown error'}`,
+          ),
+        );
+      } else {
+        uiLog.info('Updated model params', { id: model.id });
+        refreshList();
+      }
+    };
+
+    const setActiveBtn = document.createElement('button');
+    setActiveBtn.textContent =
+      activeModelId === model.id ? 'Active' : 'Set Active';
+    setActiveBtn.disabled = activeModelId === model.id || !model.installed;
+    setActiveBtn.style.padding = '6px 10px';
+    setActiveBtn.style.fontSize = '12px';
+    setActiveBtn.style.borderRadius = '4px';
+    setActiveBtn.style.border = '1px solid #2563eb';
+    setActiveBtn.style.background =
+      activeModelId === model.id ? '#dbeafe' : '#2563eb';
+    setActiveBtn.style.color =
+      activeModelId === model.id ? '#1e40af' : '#ffffff';
+    setActiveBtn.style.cursor = setActiveBtn.disabled ? 'default' : 'pointer';
+
+    setActiveBtn.onclick = async () => {
+      if (!window.modelManager?.setActive) return;
+      if (setActiveBtn.disabled) return;
+      
+      uiLog.info('Setting active model', { id: model.id });
+      const res = await window.modelManager.setActive(model.id);
+      if (!res.ok) {
+        const errorMsg = document.createElement('div');
+        errorMsg.style.color = '#b91c1c';
+        errorMsg.style.fontSize = '12px';
+        errorMsg.style.marginTop = '4px';
+        errorMsg.textContent = `Failed to set active: ${res.error || 'unknown error'}`;
+        detailsBody.appendChild(errorMsg);
+      } else {
+        uiLog.info('Active model changed', { id: model.id });
+        await refreshList();
+      }
+    };
+
+    actionsRow.appendChild(saveBtn);
+    actionsRow.appendChild(setActiveBtn);
+
+    detailsBody.appendChild(titleEl);
+    detailsBody.appendChild(statusEl);
+    detailsBody.appendChild(paramsForm);
+    detailsBody.appendChild(actionsRow);
+  };
+
+  hfSearchButton.onclick = async () => {
+    if (!window.modelManager?.searchHfGguf) return;
+    const q = hfSearchInput.value || '';
+    hfResults.innerHTML = 'Searching...';
+    const res = await window.modelManager.searchHfGguf(q);
+    if (!res.ok) {
+      hfResults.textContent = `Search error: ${(res as { ok: false; error: string }).error}`;
+      return;
+    }
+    const results = res.results || [];
+    hfResults.innerHTML = '';
+    if (!results.length) {
+      hfResults.textContent = 'No GGUF models found.';
+      return;
+    }
+    results.forEach((m: any) => {
+      const row = document.createElement('div');
+      row.style.padding = '3px';
+      row.style.marginBottom = '2px';
+      row.style.borderRadius = '3px';
+      row.style.border = '1px solid #e5e7eb';
+      row.style.cursor = 'pointer';
+
+      const title = document.createElement('div');
+      title.textContent = m.id;
+      title.style.fontSize = '12px';
+      title.style.fontWeight = '500';
+
+      const meta = document.createElement('div');
+      meta.style.fontSize = '11px';
+      meta.style.color = '#6b7280';
+      meta.textContent = `${m.downloads || 0} downloads`;
+
+      row.appendChild(title);
+      row.appendChild(meta);
+
+      row.onclick = async () => {
+        if (!window.modelManager?.listHfFiles || !window.modelManager?.downloadHf) {
+          hfStatus.textContent =
+            'Model file listing or download bridge not available in preload.';
+          return;
+        }
+
+        hfStatus.textContent = `Loading GGUF files for ${m.id}...`;
+
+        try {
+          const res = await window.modelManager.listHfFiles(m.id);
+
+          if (!res || !res.ok) {
+            const errMsg =
+              res && !res.ok
+                ? (res as { ok: false; error: string }).error
+                : 'Unknown error while listing GGUF files';
+            console.error('[ModelManager] listHfFiles failed', {
+              repoId: m.id,
+              error: errMsg,
+            });
+            hfStatus.textContent = `Failed to load files for ${m.id}: ${errMsg}`;
+            return;
+          }
+
+          const ggufFiles = Array.isArray(res.files) ? res.files : [];
+
+          hfResults.innerHTML = '';
+
+          if (!ggufFiles.length) {
+            hfStatus.textContent = `No GGUF files found in ${m.id}`;
+            return;
+          }
+
+          hfStatus.textContent = `Select a GGUF file from ${m.id} to download:`;
+
+          ggufFiles.forEach((file: any) => {
+            const fileName = String(file.name || file.path || '');
+
+            const fileRow = document.createElement('div');
+            fileRow.style.padding = '3px';
+            fileRow.style.marginBottom = '2px';
+            fileRow.style.borderRadius = '3px';
+            fileRow.style.border = '1px solid #e5e7eb';
+            fileRow.style.cursor = 'pointer';
+            fileRow.style.display = 'flex';
+            fileRow.style.justifyContent = 'space-between';
+            fileRow.style.alignItems = 'center';
+            fileRow.dataset.file = fileName;
+
+            const nameEl = document.createElement('div');
+            nameEl.textContent = fileName;
+            nameEl.style.fontSize = '11px';
+            nameEl.style.flex = '1';
+            nameEl.style.marginRight = '8px';
+            nameEl.style.whiteSpace = 'nowrap';
+            nameEl.style.overflow = 'hidden';
+            nameEl.style.textOverflow = 'ellipsis';
+
+            const sizeEl = document.createElement('div');
+            sizeEl.style.fontSize = '10px';
+            sizeEl.style.color = '#6b7280';
+            if (typeof file.size === 'number') {
+              const mb = file.size / (1024 * 1024);
+              sizeEl.textContent = `${mb.toFixed(2)} MB`;
+            }
+
+            const actionEl = document.createElement('button');
+            actionEl.textContent = 'Download';
+            actionEl.style.fontSize = '11px';
+            actionEl.style.padding = '4px 8px';
+            actionEl.style.borderRadius = '3px';
+            actionEl.style.border = '1px solid #2563eb';
+            actionEl.style.background = '#2563eb';
+            actionEl.style.color = '#fff';
+            actionEl.style.cursor = 'pointer';
+
+            actionEl.onclick = async (ev) => {
+              ev.stopPropagation();
+              hfStatus.textContent = `Starting download for ${m.id} / ${fileName}...`;
+              const result = await window.modelManager!.downloadHf({
+                repoId: m.id,
+                fileName,
+              });
+
+              if (!result.ok) {
+                hfStatus.textContent = `Download failed: ${
+                  result.error || 'unknown error'
+                }`;
+              } else {
+                hfStatus.textContent = `Download started for ${m.id} / ${fileName}`;
+                await refreshList();
+              }
+            };
+
+            const leftWrap = document.createElement('div');
+            leftWrap.style.display = 'flex';
+            leftWrap.style.flexDirection = 'column';
+            leftWrap.style.flex = '1';
+            leftWrap.appendChild(nameEl);
+            if (sizeEl.textContent) {
+              leftWrap.appendChild(sizeEl);
+            }
+
+            fileRow.appendChild(leftWrap);
+            fileRow.appendChild(actionEl);
+            hfResults.appendChild(fileRow);
+          });
+        } catch (err: any) {
+          console.error('[ModelManager] Error loading HF GGUF files via IPC', err);
+          hfStatus.textContent = `Error loading files for ${m.id}: ${
+            err?.message || String(err)
+          }`;
+        }
+      };
+
+      hfResults.appendChild(row);
+    });
+  };
+
+  void refreshList();
+
+  // Clean up progress listener when leaving screen (back button triggers full reload).
+  if (unsubscribeProgress) {
+    window.addEventListener(
+      'beforeunload',
+      () => {
+        unsubscribeProgress();
+      },
+      { once: true },
+    );
+  }
+};
+
 window.addEventListener('DOMContentLoaded', async () => {
   logRenderer('DOMContentLoaded');
   const params = parseStartupParams();
   const llamaInstalledFlag = params.get('llamaInstalled') === '1';
 
+  // If not installed, show setup.
   if (!llamaInstalledFlag && window.llama?.getInstallStatus) {
     logRenderer('Checking llama install status via preload API');
     const status = await window.llama
@@ -1019,7 +1702,21 @@ window.addEventListener('DOMContentLoaded', async () => {
     logRenderer('Llama already installed; proceeding with main UI');
   }
 
-  // If we reach here, llama is installed (or we fall back to existing behavior).
+  // If installed, expose a minimal control to open Model Management.
+  // We inject a "Models" button into the top-right next to llama-status if present.
+  const header = document.querySelector('.md-topbar-right');
+  if (header) {
+    const btn = document.createElement('button');
+    btn.textContent = 'Models';
+    btn.className = 'md-btn md-btn-ghost';
+    btn.style.marginLeft = '8px';
+    btn.onclick = () => {
+      buildModelManagementUI();
+    };
+    header.appendChild(btn);
+  }
+
+  // Ensure llama-server is running so there is an active engine.
   uiLog.info('Ensuring managed llama-server is running via preload bridge');
   if (window.llama?.ensureServer) {
     try {
