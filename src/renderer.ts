@@ -1082,8 +1082,9 @@ declare global {
 
 /**
  * Simple in-renderer Model Management screen implementation.
- * - Toggle between main P2P UI and Models UI.
- * - Uses window.modelManager for data + HF search & download.
+ * - Separate UIs for Model Management and Model Downloading
+ * - Model Management: select active model, edit params
+ * - Download Models: HF search and download
  */
 
 function renderMainP2PUI() {
@@ -1092,174 +1093,100 @@ function renderMainP2PUI() {
   document.location.href = target;
 }
 
+/**
+ * Build the Model Management UI (selection and parameters only)
+ */
 function buildModelManagementUI() {
   const root = document.body;
   root.innerHTML = '';
 
   const container = document.createElement('div');
-  container.style.display = 'flex';
-  container.style.flexDirection = 'column';
-  container.style.height = '100vh';
-  container.style.fontFamily =
-    'system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
-  container.style.padding = '16px';
-  container.style.boxSizing = 'border-box';
+  container.className = 'md-root md-stack';
 
-  const header = document.createElement('div');
-  header.style.display = 'flex';
+  const header = document.createElement('header');
+  header.className = 'md-topbar md-stack-section';
   header.style.justifyContent = 'space-between';
-  header.style.alignItems = 'center';
-  header.style.marginBottom = '12px';
+
+  const headerLeft = document.createElement('div');
+  headerLeft.className = 'md-topbar-left';
 
   const title = document.createElement('div');
+  title.className = 'md-app-title';
   title.textContent = 'Model Management';
-  title.style.fontSize = '18px';
-  title.style.fontWeight = '600';
+
+  const subtitle = document.createElement('div');
+  subtitle.className = 'md-app-subtitle';
+  subtitle.textContent = 'Manage installed models and parameters';
+
+  headerLeft.appendChild(title);
+  headerLeft.appendChild(subtitle);
+
+  const headerRight = document.createElement('div');
+  headerRight.className = 'md-topbar-right';
 
   const backBtn = document.createElement('button');
   backBtn.textContent = 'Back to Main';
-  backBtn.style.padding = '6px 10px';
-  backBtn.style.borderRadius = '4px';
-  backBtn.style.border = '1px solid #d1d5db';
-  backBtn.style.background = '#fff';
-  backBtn.style.cursor = 'pointer';
+  backBtn.className = 'md-btn md-btn-ghost';
   backBtn.onclick = () => {
     renderMainP2PUI();
   };
 
-  header.appendChild(title);
-  header.appendChild(backBtn);
+  headerRight.appendChild(backBtn);
+  header.appendChild(headerLeft);
+  header.appendChild(headerRight);
 
   const layout = document.createElement('div');
+  layout.className = 'md-stack-section';
   layout.style.display = 'grid';
-  layout.style.gridTemplateColumns = '260px 1fr';
-  layout.style.gridGap = '16px';
+  layout.style.gridTemplateColumns = '280px 1fr';
+  layout.style.gap = '14px';
   layout.style.flex = '1 1 auto';
   layout.style.minHeight = '0';
 
   // Left: Installed models list
-  const leftPanel = document.createElement('div');
-  leftPanel.style.border = '1px solid #e5e7eb';
-  leftPanel.style.borderRadius = '6px';
-  leftPanel.style.padding = '8px';
+  const leftPanel = document.createElement('section');
+  leftPanel.className = 'md-card';
+  leftPanel.style.display = 'flex';
+  leftPanel.style.flexDirection = 'column';
+  leftPanel.style.gap = '8px';
   leftPanel.style.overflowY = 'auto';
 
   const leftTitle = document.createElement('div');
+  leftTitle.className = 'md-section-label';
   leftTitle.textContent = 'Installed Models';
-  leftTitle.style.fontSize = '14px';
-  leftTitle.style.fontWeight = '600';
-  leftTitle.style.marginBottom = '8px';
   leftPanel.appendChild(leftTitle);
 
   const modelListEl = document.createElement('div');
   modelListEl.id = 'md-model-list';
+  modelListEl.style.display = 'flex';
+  modelListEl.style.flexDirection = 'column';
+  modelListEl.style.gap = '4px';
   leftPanel.appendChild(modelListEl);
 
-  // Right: Details + HF search/download
-  const rightPanel = document.createElement('div');
+  // Right: Details
+  const rightPanel = document.createElement('section');
+  rightPanel.className = 'md-card';
   rightPanel.style.display = 'flex';
   rightPanel.style.flexDirection = 'column';
-  rightPanel.style.gap = '12px';
-
-  const detailsCard = document.createElement('div');
-  detailsCard.style.border = '1px solid #e5e7eb';
-  detailsCard.style.borderRadius = '6px';
-  detailsCard.style.padding = '8px';
-  detailsCard.id = 'md-model-details';
+  rightPanel.style.gap = '8px';
+  rightPanel.style.flex = '1';
+  rightPanel.style.minHeight = '0';
+  rightPanel.style.overflowY = 'auto';
 
   const detailsTitle = document.createElement('div');
-  detailsTitle.textContent = 'Model Details';
-  detailsTitle.style.fontSize = '14px';
-  detailsTitle.style.fontWeight = '600';
-  detailsTitle.style.marginBottom = '6px';
-  detailsCard.appendChild(detailsTitle);
+  detailsTitle.className = 'md-section-label';
+  detailsTitle.textContent = 'Model Details & Parameters';
+  rightPanel.appendChild(detailsTitle);
 
   const detailsBody = document.createElement('div');
   detailsBody.id = 'md-model-details-body';
-  detailsBody.textContent = 'Select a model from the left.';
-  detailsBody.style.fontSize = '13px';
-  detailsCard.appendChild(detailsBody);
-
-  const hfCard = document.createElement('div');
-  hfCard.style.border = '1px solid #e5e7eb';
-  hfCard.style.borderRadius = '6px';
-  hfCard.style.padding = '8px';
-
-  const hfTitle = document.createElement('div');
-  hfTitle.textContent = 'Add GGUF Model from Hugging Face';
-  hfTitle.style.fontSize = '14px';
-  hfTitle.style.fontWeight = '600';
-  hfTitle.style.marginBottom = '6px';
-
-  const hfSearchRow = document.createElement('div');
-  hfSearchRow.style.display = 'flex';
-  hfSearchRow.style.gap = '6px';
-  hfSearchRow.style.marginBottom = '4px';
-
-  const hfSearchInput = document.createElement('input');
-  hfSearchInput.type = 'text';
-  hfSearchInput.placeholder = 'Search GGUF models (e.g. "Qwen 7B")';
-  hfSearchInput.style.flex = '1';
-  hfSearchInput.style.fontSize = '13px';
-  hfSearchInput.style.padding = '6px 8px';
-
-  const hfSearchButton = document.createElement('button');
-  hfSearchButton.textContent = 'Search';
-  hfSearchButton.style.padding = '6px 10px';
-  hfSearchButton.style.fontSize = '13px';
-  hfSearchButton.style.borderRadius = '4px';
-  hfSearchButton.style.border = '1px solid #d1d5db';
-  hfSearchButton.style.background = '#f9fafb';
-  hfSearchButton.style.cursor = 'pointer';
-
-  hfSearchRow.appendChild(hfSearchInput);
-  hfSearchRow.appendChild(hfSearchButton);
-
-  const hfResults = document.createElement('div');
-  hfResults.id = 'md-hf-results';
-  hfResults.style.maxHeight = '200px';
-  hfResults.style.overflowY = 'auto';
-  hfResults.style.marginBottom = '8px';
-  hfResults.style.fontSize = '12px';
-
-  const hfStatus = document.createElement('div');
-  hfStatus.id = 'md-hf-status';
-  hfStatus.style.fontSize = '12px';
-  hfStatus.style.color = '#6b7280';
-  hfStatus.style.marginTop = '4px';
-  hfStatus.style.minHeight = '20px';
-  
-  // Progress bar for downloads
-  const progressBarContainer = document.createElement('div');
-  progressBarContainer.id = 'md-download-progress-container';
-  progressBarContainer.style.width = '100%';
-  progressBarContainer.style.height = '6px';
-  progressBarContainer.style.background = '#e5e7eb';
-  progressBarContainer.style.borderRadius = '3px';
-  progressBarContainer.style.overflow = 'hidden';
-  progressBarContainer.style.marginTop = '4px';
-  progressBarContainer.style.display = 'none';
-
-  const progressBarFill = document.createElement('div');
-  progressBarFill.id = 'md-download-progress-fill';
-  progressBarFill.style.width = '0%';
-  progressBarFill.style.height = '100%';
-  progressBarFill.style.background = '#2563eb';
-  progressBarFill.style.transition = 'width 0.2s ease';
-  
-  progressBarContainer.appendChild(progressBarFill);
-
-  hfCard.appendChild(hfTitle);
-  hfCard.appendChild(hfSearchRow);
-  hfCard.appendChild(hfResults);
-  hfCard.appendChild(progressBarContainer);
-  hfCard.appendChild(hfStatus);
+  detailsBody.textContent = 'Select a model from the left to view and edit its parameters.';
+  detailsBody.style.fontSize = '12px';
+  detailsBody.style.color = 'var(--md-text-muted)';
+  rightPanel.appendChild(detailsBody);
 
   layout.appendChild(leftPanel);
   layout.appendChild(rightPanel);
-
-  rightPanel.appendChild(detailsCard);
-  rightPanel.appendChild(hfCard);
 
   container.appendChild(header);
   container.appendChild(layout);
@@ -1267,31 +1194,6 @@ function buildModelManagementUI() {
   root.appendChild(container);
 
   let currentSelectedId: string | null = null;
-  const unsubscribeProgress =
-    window.modelManager?.onDownloadProgress?.((p) => {
-      if (p.type === 'download-start') {
-        progressBarContainer.style.display = 'block';
-        progressBarFill.style.width = '0%';
-        hfStatus.textContent = `Downloading ${p.id}...`;
-      } else if (p.type === 'download-progress' && p.totalBytes) {
-        const percent = ((p.receivedBytes || 0) / p.totalBytes) * 100;
-        progressBarFill.style.width = `${Math.min(99, percent).toFixed(1)}%`;
-        const mbReceived = ((p.receivedBytes || 0) / (1024 * 1024)).toFixed(1);
-        const mbTotal = (p.totalBytes / (1024 * 1024)).toFixed(1);
-        hfStatus.textContent = `Downloading ${p.id}: ${mbReceived}MB / ${mbTotal}MB`;
-      } else if (p.type === 'download-complete') {
-        progressBarFill.style.width = '100%';
-        hfStatus.textContent = `Download complete for ${p.id}`;
-        setTimeout(() => {
-          progressBarContainer.style.display = 'none';
-        }, 2000);
-      } else if (p.type === 'error') {
-        progressBarContainer.style.display = 'none';
-        hfStatus.textContent = `Error downloading ${p.id}: ${p.message || ''}`;
-      } else if (p.message) {
-        hfStatus.textContent = p.message;
-      }
-    }) || null;
 
   const refreshList = async () => {
     if (!window.modelManager?.list) return;
@@ -1309,23 +1211,25 @@ function buildModelManagementUI() {
 
     models.forEach((m) => {
       const row = document.createElement('div');
-      row.style.padding = '6px';
-      row.style.marginBottom = '3px';
-      row.style.borderRadius = '4px';
+      row.style.padding = '8px 10px';
+      row.style.marginBottom = '4px';
+      row.style.borderRadius = '8px';
       row.style.cursor = 'pointer';
       row.style.display = 'flex';
       row.style.flexDirection = 'column';
-      row.style.gap = '3px';
+      row.style.gap = '4px';
+      row.style.transition = 'all var(--md-transition-fast)';
       row.dataset.id = m.id;
 
       const name = document.createElement('div');
       name.textContent = m.displayName || m.id;
-      name.style.fontSize = '13px';
+      name.style.fontSize = '12px';
       name.style.fontWeight = '500';
+      name.style.color = 'var(--md-text)';
 
       const meta = document.createElement('div');
-      meta.style.fontSize = '11px';
-      meta.style.color = '#6b7280';
+      meta.style.fontSize = '10px';
+      meta.style.color = 'var(--md-text-muted)';
       meta.textContent = `${
         m.installed ? 'installed' : 'not installed'
       }${activeModelId === m.id ? ' • active' : ''}`;
@@ -1334,11 +1238,26 @@ function buildModelManagementUI() {
       row.appendChild(meta);
 
       if (m.id === currentSelectedId) {
-        row.style.backgroundColor = '#dbeafe';
-        row.style.border = '1px solid #93c5fd';
+        row.style.background = 'var(--md-accent-soft)';
+        row.style.border = '1px solid var(--md-accent)';
       } else {
-        row.style.border = '1px solid transparent';
+        row.style.background = 'rgba(15, 23, 42, 0.6)';
+        row.style.border = '1px solid var(--md-border-subtle)';
       }
+
+      row.onmouseenter = () => {
+        if (m.id !== currentSelectedId) {
+          row.style.background = 'rgba(15, 23, 42, 0.9)';
+          row.style.borderColor = 'var(--md-border-strong)';
+        }
+      };
+
+      row.onmouseleave = () => {
+        if (m.id !== currentSelectedId) {
+          row.style.background = 'rgba(15, 23, 42, 0.6)';
+          row.style.borderColor = 'var(--md-border-subtle)';
+        }
+      };
 
       row.onclick = () => {
         currentSelectedId = m.id;
@@ -1370,14 +1289,15 @@ function buildModelManagementUI() {
 
     const titleEl = document.createElement('div');
     titleEl.textContent = model.displayName || model.id;
-    titleEl.style.fontSize = '14px';
+    titleEl.style.fontSize = '13px';
     titleEl.style.fontWeight = '600';
-    titleEl.style.marginBottom = '4px';
+    titleEl.style.marginBottom = '6px';
+    titleEl.style.color = 'var(--md-text)';
 
     const statusEl = document.createElement('div');
-    statusEl.style.fontSize = '12px';
-    statusEl.style.marginBottom = '6px';
-    statusEl.style.color = '#6b7280';
+    statusEl.style.fontSize = '11px';
+    statusEl.style.marginBottom = '8px';
+    statusEl.style.color = 'var(--md-text-muted)';
     statusEl.textContent = `${
       model.installed ? 'Installed' : 'Not installed'
     }${activeModelId === model.id ? ' • Active model' : ''}`;
@@ -1408,16 +1328,18 @@ function buildModelManagementUI() {
 
       const lab = document.createElement('div');
       lab.textContent = paramLabels[key];
-      lab.style.color = '#6b7280';
-      lab.style.fontSize = '11px';
+      lab.style.color = 'var(--md-text-muted)';
+      lab.style.fontSize = '10px';
 
       const input = document.createElement('input');
       input.type = 'number';
       input.value = String(model.currentParams[key]);
-      input.style.fontSize = '12px';
-      input.style.padding = '4px 6px';
-      input.style.borderRadius = '3px';
-      input.style.border = '1px solid #d1d5db';
+      input.style.fontSize = '11px';
+      input.style.padding = '5px 7px';
+      input.style.borderRadius = '5px';
+      input.style.border = '1px solid var(--md-border-subtle)';
+      input.style.background = 'rgba(2, 6, 23, 0.8)';
+      input.style.color = 'var(--md-text)';
 
       inputs[key] = input;
 
@@ -1433,12 +1355,8 @@ function buildModelManagementUI() {
 
     const saveBtn = document.createElement('button');
     saveBtn.textContent = 'Save Params';
-    saveBtn.style.padding = '6px 10px';
-    saveBtn.style.fontSize = '12px';
-    saveBtn.style.borderRadius = '4px';
-    saveBtn.style.border = '1px solid #d1d5db';
-    saveBtn.style.background = '#f3f4f6';
-    saveBtn.style.cursor = 'pointer';
+    saveBtn.className = 'md-btn md-btn-ghost';
+    saveBtn.style.fontSize = '11px';
 
     saveBtn.onclick = async () => {
       if (!window.modelManager?.updateParams) return;
@@ -1467,15 +1385,12 @@ function buildModelManagementUI() {
     setActiveBtn.textContent =
       activeModelId === model.id ? 'Active' : 'Set Active';
     setActiveBtn.disabled = activeModelId === model.id || !model.installed;
-    setActiveBtn.style.padding = '6px 10px';
-    setActiveBtn.style.fontSize = '12px';
-    setActiveBtn.style.borderRadius = '4px';
-    setActiveBtn.style.border = '1px solid #2563eb';
-    setActiveBtn.style.background =
-      activeModelId === model.id ? '#dbeafe' : '#2563eb';
-    setActiveBtn.style.color =
-      activeModelId === model.id ? '#1e40af' : '#ffffff';
-    setActiveBtn.style.cursor = setActiveBtn.disabled ? 'default' : 'pointer';
+    setActiveBtn.className = activeModelId === model.id ? 'md-btn md-btn-ghost' : 'md-btn';
+    setActiveBtn.style.fontSize = '11px';
+    if (setActiveBtn.disabled) {
+      setActiveBtn.style.opacity = '0.5';
+      setActiveBtn.style.cursor = 'default';
+    }
 
     setActiveBtn.onclick = async () => {
       if (!window.modelManager?.setActive) return;
@@ -1505,50 +1420,256 @@ function buildModelManagementUI() {
     detailsBody.appendChild(actionsRow);
   };
 
+  void refreshList();
+}
+
+/**
+ * Build the Download Models UI (HuggingFace search and download)
+ */
+function buildDownloadModelsUI() {
+  const root = document.body;
+  root.innerHTML = '';
+
+  const container = document.createElement('div');
+  container.className = 'md-root md-stack';
+
+  const header = document.createElement('header');
+  header.className = 'md-topbar md-stack-section';
+  header.style.justifyContent = 'space-between';
+
+  const headerLeft = document.createElement('div');
+  headerLeft.className = 'md-topbar-left';
+
+  const title = document.createElement('div');
+  title.className = 'md-app-title';
+  title.textContent = 'Download Models';
+
+  const subtitle = document.createElement('div');
+  subtitle.className = 'md-app-subtitle';
+  subtitle.textContent = 'Search and download GGUF models from Hugging Face';
+
+  headerLeft.appendChild(title);
+  headerLeft.appendChild(subtitle);
+
+  const headerRight = document.createElement('div');
+  headerRight.className = 'md-topbar-right';
+
+  const backBtn = document.createElement('button');
+  backBtn.textContent = 'Back to Main';
+  backBtn.className = 'md-btn md-btn-ghost';
+  backBtn.onclick = () => {
+    renderMainP2PUI();
+  };
+
+  headerRight.appendChild(backBtn);
+  header.appendChild(headerLeft);
+  header.appendChild(headerRight);
+
+  const mainContent = document.createElement('div');
+  mainContent.className = 'md-stack-section';
+  mainContent.style.flex = '1';
+  mainContent.style.display = 'flex';
+  mainContent.style.flexDirection = 'column';
+  mainContent.style.gap = '14px';
+  mainContent.style.minHeight = '0';
+
+  const hfCard = document.createElement('section');
+  hfCard.className = 'md-card';
+  hfCard.style.display = 'flex';
+  hfCard.style.flexDirection = 'column';
+  hfCard.style.gap = '8px';
+
+  const hfTitle = document.createElement('div');
+  hfTitle.className = 'md-section-label';
+  hfTitle.textContent = 'Search GGUF Models';
+
+  const hfSearchRow = document.createElement('div');
+  hfSearchRow.style.display = 'flex';
+  hfSearchRow.style.gap = '8px';
+
+  const hfSearchInput = document.createElement('input');
+  hfSearchInput.type = 'text';
+  hfSearchInput.placeholder = 'Search GGUF models (e.g. "Qwen 7B", "Llama")';
+  hfSearchInput.style.flex = '1';
+  hfSearchInput.style.fontSize = '12px';
+  hfSearchInput.style.padding = '8px 10px';
+  hfSearchInput.style.borderRadius = '7px';
+  hfSearchInput.style.border = '1px solid var(--md-border-subtle)';
+  hfSearchInput.style.background = 'rgba(2, 6, 23, 0.8)';
+  hfSearchInput.style.color = 'var(--md-text)';
+
+  const hfSearchButton = document.createElement('button');
+  hfSearchButton.textContent = 'Search';
+  hfSearchButton.className = 'md-btn';
+  hfSearchButton.style.fontSize = '12px';
+
+  hfSearchRow.appendChild(hfSearchInput);
+  hfSearchRow.appendChild(hfSearchButton);
+
+  const resultsCard = document.createElement('section');
+  resultsCard.className = 'md-card';
+  resultsCard.style.flex = '1';
+  resultsCard.style.display = 'flex';
+  resultsCard.style.flexDirection = 'column';
+  resultsCard.style.gap = '8px';
+  resultsCard.style.minHeight = '0';
+
+  const resultsTitle = document.createElement('div');
+  resultsTitle.className = 'md-section-label';
+  resultsTitle.textContent = 'Search Results';
+
+  const hfResults = document.createElement('div');
+  hfResults.id = 'md-hf-results';
+  hfResults.style.flex = '1';
+  hfResults.style.overflowY = 'auto';
+  hfResults.style.fontSize = '12px';
+  hfResults.textContent = 'Enter a search term and click Search to find GGUF models.';
+  hfResults.style.color = 'var(--md-text-muted)';
+
+  const hfStatus = document.createElement('div');
+  hfStatus.id = 'md-hf-status';
+  hfStatus.style.fontSize = '11px';
+  hfStatus.style.color = 'var(--md-text-muted)';
+  hfStatus.style.minHeight = '18px';
+  
+  const progressBarContainer = document.createElement('div');
+  progressBarContainer.id = 'md-download-progress-container';
+  progressBarContainer.style.width = '100%';
+  progressBarContainer.style.height = '6px';
+  progressBarContainer.style.background = 'rgba(15, 23, 42, 0.8)';
+  progressBarContainer.style.borderRadius = '3px';
+  progressBarContainer.style.overflow = 'hidden';
+  progressBarContainer.style.marginTop = '4px';
+  progressBarContainer.style.display = 'none';
+
+  const progressBarFill = document.createElement('div');
+  progressBarFill.id = 'md-download-progress-fill';
+  progressBarFill.style.width = '0%';
+  progressBarFill.style.height = '100%';
+  progressBarFill.style.background = 'var(--md-accent)';
+  progressBarFill.style.boxShadow = '0 0 8px var(--md-accent)';
+  progressBarFill.style.transition = 'width 0.2s ease';
+  
+  progressBarContainer.appendChild(progressBarFill);
+
+  hfCard.appendChild(hfTitle);
+  hfCard.appendChild(hfSearchRow);
+
+  resultsCard.appendChild(resultsTitle);
+  resultsCard.appendChild(hfResults);
+  resultsCard.appendChild(progressBarContainer);
+  resultsCard.appendChild(hfStatus);
+
+  mainContent.appendChild(hfCard);
+  mainContent.appendChild(resultsCard);
+
+  container.appendChild(header);
+  container.appendChild(mainContent);
+
+  root.appendChild(container);
+
+  // Download progress tracking
+  const unsubscribeProgress =
+    window.modelManager?.onDownloadProgress?.((p) => {
+      if (p.type === 'download-start') {
+        progressBarContainer.style.display = 'block';
+        progressBarFill.style.width = '0%';
+        hfStatus.textContent = `Downloading ${p.id}...`;
+        hfStatus.style.color = 'var(--md-accent)';
+      } else if (p.type === 'download-progress' && p.totalBytes) {
+        const percent = ((p.receivedBytes || 0) / p.totalBytes) * 100;
+        progressBarFill.style.width = `${Math.min(99, percent).toFixed(1)}%`;
+        const mbReceived = ((p.receivedBytes || 0) / (1024 * 1024)).toFixed(1);
+        const mbTotal = (p.totalBytes / (1024 * 1024)).toFixed(1);
+        hfStatus.textContent = `Downloading ${p.id}: ${mbReceived}MB / ${mbTotal}MB`;
+      } else if (p.type === 'download-complete') {
+        progressBarFill.style.width = '100%';
+        hfStatus.textContent = `Download complete for ${p.id}. Model is now available!`;
+        hfStatus.style.color = 'var(--md-accent)';
+        setTimeout(() => {
+          progressBarContainer.style.display = 'none';
+        }, 3000);
+      } else if (p.type === 'error') {
+        progressBarContainer.style.display = 'none';
+        hfStatus.textContent = `Error downloading ${p.id}: ${p.message || ''}`;
+        hfStatus.style.color = 'var(--md-danger)';
+      } else if (p.message) {
+        hfStatus.textContent = p.message;
+      }
+    }) || null;
+
+  // Search functionality
   hfSearchButton.onclick = async () => {
     if (!window.modelManager?.searchHfGguf) return;
     const q = hfSearchInput.value || '';
-    hfResults.innerHTML = 'Searching...';
+    hfResults.innerHTML = '<div style="color: var(--md-text-muted);">Searching...</div>';
+    hfStatus.textContent = '';
+    
     const res = await window.modelManager.searchHfGguf(q);
     if (!res.ok) {
-      hfResults.textContent = `Search error: ${(res as { ok: false; error: string }).error}`;
+      hfResults.innerHTML = `<div style="color: var(--md-danger);">Search error: ${(res as { ok: false; error: string }).error}</div>`;
       return;
     }
+    
     const results = res.results || [];
     hfResults.innerHTML = '';
+    
     if (!results.length) {
-      hfResults.textContent = 'No GGUF models found.';
+      hfResults.innerHTML = '<div style="color: var(--md-text-muted);">No GGUF models found. Try a different search term.</div>';
       return;
     }
+    
     results.forEach((m: any) => {
       const row = document.createElement('div');
-      row.style.padding = '3px';
-      row.style.marginBottom = '2px';
-      row.style.borderRadius = '3px';
-      row.style.border = '1px solid #e5e7eb';
+      row.style.padding = '8px 10px';
+      row.style.marginBottom = '4px';
+      row.style.borderRadius = '8px';
+      row.style.border = '1px solid var(--md-border-subtle)';
       row.style.cursor = 'pointer';
+      row.style.transition = 'all var(--md-transition-fast)';
+      row.style.background = 'rgba(15, 23, 42, 0.6)';
 
-      const title = document.createElement('div');
-      title.textContent = m.id;
-      title.style.fontSize = '12px';
-      title.style.fontWeight = '500';
+      row.onmouseenter = () => {
+        row.style.background = 'rgba(15, 23, 42, 0.9)';
+        row.style.borderColor = 'var(--md-accent)';
+      };
+      row.onmouseleave = () => {
+        row.style.background = 'rgba(15, 23, 42, 0.6)';
+        row.style.borderColor = 'var(--md-border-subtle)';
+      };
+
+      const titleRow = document.createElement('div');
+      titleRow.style.display = 'flex';
+      titleRow.style.justifyContent = 'space-between';
+      titleRow.style.alignItems = 'center';
+      titleRow.style.marginBottom = '2px';
+
+      const modelTitle = document.createElement('div');
+      modelTitle.textContent = m.id;
+      modelTitle.style.fontSize = '12px';
+      modelTitle.style.fontWeight = '500';
+      modelTitle.style.color = 'var(--md-text)';
 
       const meta = document.createElement('div');
-      meta.style.fontSize = '11px';
-      meta.style.color = '#6b7280';
+      meta.style.fontSize = '10px';
+      meta.style.color = 'var(--md-text-muted)';
       meta.textContent = `${m.downloads || 0} downloads`;
 
-      row.appendChild(title);
-      row.appendChild(meta);
+      titleRow.appendChild(modelTitle);
+      titleRow.appendChild(meta);
+
+      row.appendChild(titleRow);
 
       row.onclick = async () => {
         if (!window.modelManager?.listHfFiles || !window.modelManager?.downloadHf) {
           hfStatus.textContent =
             'Model file listing or download bridge not available in preload.';
+          hfStatus.style.color = 'var(--md-danger)';
           return;
         }
 
         hfStatus.textContent = `Loading GGUF files for ${m.id}...`;
+        hfStatus.style.color = 'var(--md-text-muted)';
 
         try {
           const res = await window.modelManager.listHfFiles(m.id);
@@ -1563,6 +1684,7 @@ function buildModelManagementUI() {
               error: errMsg,
             });
             hfStatus.textContent = `Failed to load files for ${m.id}: ${errMsg}`;
+            hfStatus.style.color = 'var(--md-danger)';
             return;
           }
 
@@ -1572,55 +1694,85 @@ function buildModelManagementUI() {
 
           if (!ggufFiles.length) {
             hfStatus.textContent = `No GGUF files found in ${m.id}`;
+            hfStatus.style.color = 'var(--md-danger)';
             return;
           }
 
           hfStatus.textContent = `Select a GGUF file from ${m.id} to download:`;
+          hfStatus.style.color = 'var(--md-text-muted)';
+
+          // Back button to return to search results
+          const backToResults = document.createElement('button');
+          backToResults.textContent = '← Back to Search Results';
+          backToResults.className = 'md-btn md-btn-ghost';
+          backToResults.style.marginBottom = '8px';
+          backToResults.style.fontSize = '11px';
+          backToResults.onclick = () => {
+            hfSearchButton.click();
+          };
+          hfResults.appendChild(backToResults);
 
           ggufFiles.forEach((file: any) => {
             const fileName = String(file.name || file.path || '');
 
             const fileRow = document.createElement('div');
-            fileRow.style.padding = '3px';
-            fileRow.style.marginBottom = '2px';
-            fileRow.style.borderRadius = '3px';
-            fileRow.style.border = '1px solid #e5e7eb';
-            fileRow.style.cursor = 'pointer';
+            fileRow.style.padding = '8px 10px';
+            fileRow.style.marginBottom = '4px';
+            fileRow.style.borderRadius = '7px';
+            fileRow.style.border = '1px solid var(--md-border-subtle)';
+            fileRow.style.background = 'rgba(15, 23, 42, 0.6)';
             fileRow.style.display = 'flex';
             fileRow.style.justifyContent = 'space-between';
             fileRow.style.alignItems = 'center';
+            fileRow.style.gap = '8px';
             fileRow.dataset.file = fileName;
+
+            const leftWrap = document.createElement('div');
+            leftWrap.style.display = 'flex';
+            leftWrap.style.flexDirection = 'column';
+            leftWrap.style.flex = '1';
+            leftWrap.style.minWidth = '0';
 
             const nameEl = document.createElement('div');
             nameEl.textContent = fileName;
             nameEl.style.fontSize = '11px';
-            nameEl.style.flex = '1';
-            nameEl.style.marginRight = '8px';
+            nameEl.style.fontWeight = '500';
+            nameEl.style.color = 'var(--md-text)';
             nameEl.style.whiteSpace = 'nowrap';
             nameEl.style.overflow = 'hidden';
             nameEl.style.textOverflow = 'ellipsis';
 
             const sizeEl = document.createElement('div');
             sizeEl.style.fontSize = '10px';
-            sizeEl.style.color = '#6b7280';
+            sizeEl.style.color = 'var(--md-text-muted)';
             if (typeof file.size === 'number') {
               const mb = file.size / (1024 * 1024);
-              sizeEl.textContent = `${mb.toFixed(2)} MB`;
+              const gb = mb / 1024;
+              sizeEl.textContent = gb >= 1
+                ? `${gb.toFixed(2)} GB`
+                : `${mb.toFixed(2)} MB`;
+            }
+
+            leftWrap.appendChild(nameEl);
+            if (sizeEl.textContent) {
+              leftWrap.appendChild(sizeEl);
             }
 
             const actionEl = document.createElement('button');
             actionEl.textContent = 'Download';
+            actionEl.className = 'md-btn';
             actionEl.style.fontSize = '11px';
-            actionEl.style.padding = '4px 8px';
-            actionEl.style.borderRadius = '3px';
-            actionEl.style.border = '1px solid #2563eb';
-            actionEl.style.background = '#2563eb';
-            actionEl.style.color = '#fff';
-            actionEl.style.cursor = 'pointer';
+            actionEl.style.whiteSpace = 'nowrap';
 
             actionEl.onclick = async (ev) => {
               ev.stopPropagation();
+              actionEl.disabled = true;
+              actionEl.textContent = 'Downloading...';
+              actionEl.style.opacity = '0.6';
+              
               hfStatus.textContent = `Starting download for ${m.id} / ${fileName}...`;
+              hfStatus.style.color = 'var(--md-accent)';
+              
               const result = await window.modelManager!.downloadHf({
                 repoId: m.id,
                 fileName,
@@ -1630,20 +1782,16 @@ function buildModelManagementUI() {
                 hfStatus.textContent = `Download failed: ${
                   result.error || 'unknown error'
                 }`;
+                hfStatus.style.color = 'var(--md-danger)';
+                actionEl.disabled = false;
+                actionEl.textContent = 'Retry';
+                actionEl.style.opacity = '1';
               } else {
-                hfStatus.textContent = `Download started for ${m.id} / ${fileName}`;
-                await refreshList();
+                actionEl.textContent = '✓ Downloaded';
+                actionEl.disabled = true;
+                actionEl.style.opacity = '0.7';
               }
             };
-
-            const leftWrap = document.createElement('div');
-            leftWrap.style.display = 'flex';
-            leftWrap.style.flexDirection = 'column';
-            leftWrap.style.flex = '1';
-            leftWrap.appendChild(nameEl);
-            if (sizeEl.textContent) {
-              leftWrap.appendChild(sizeEl);
-            }
 
             fileRow.appendChild(leftWrap);
             fileRow.appendChild(actionEl);
@@ -1654,6 +1802,7 @@ function buildModelManagementUI() {
           hfStatus.textContent = `Error loading files for ${m.id}: ${
             err?.message || String(err)
           }`;
+          hfStatus.style.color = 'var(--md-danger)';
         }
       };
 
@@ -1661,9 +1810,7 @@ function buildModelManagementUI() {
     });
   };
 
-  void refreshList();
-
-  // Clean up progress listener when leaving screen (back button triggers full reload).
+  // Clean up progress listener when leaving screen
   if (unsubscribeProgress) {
     window.addEventListener(
       'beforeunload',
@@ -1673,7 +1820,14 @@ function buildModelManagementUI() {
       { once: true },
     );
   }
-};
+
+  // Allow Enter key to trigger search
+  hfSearchInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      hfSearchButton.click();
+    }
+  });
+}
 
 window.addEventListener('DOMContentLoaded', async () => {
   logRenderer('DOMContentLoaded');
@@ -1702,18 +1856,30 @@ window.addEventListener('DOMContentLoaded', async () => {
     logRenderer('Llama already installed; proceeding with main UI');
   }
 
-  // If installed, expose a minimal control to open Model Management.
-  // We inject a "Models" button into the top-right next to llama-status if present.
+  // If installed, expose two separate controls in the top-right:
+  // 1. "Models" - for managing/selecting installed models
+  // 2. "Download Models" - for searching and downloading from HuggingFace
   const header = document.querySelector('.md-topbar-right');
   if (header) {
-    const btn = document.createElement('button');
-    btn.textContent = 'Models';
-    btn.className = 'md-btn md-btn-ghost';
-    btn.style.marginLeft = '8px';
-    btn.onclick = () => {
+    const modelsBtn = document.createElement('button');
+    modelsBtn.textContent = 'Models';
+    modelsBtn.className = 'md-btn md-btn-ghost';
+    modelsBtn.style.marginLeft = '8px';
+    modelsBtn.onclick = () => {
       buildModelManagementUI();
     };
-    header.appendChild(btn);
+    modelsBtn.title = 'Manage installed models and parameters';
+    header.appendChild(modelsBtn);
+
+    const downloadBtn = document.createElement('button');
+    downloadBtn.textContent = 'Download Models';
+    downloadBtn.className = 'md-btn';
+    downloadBtn.style.marginLeft = '8px';
+    downloadBtn.onclick = () => {
+      buildDownloadModelsUI();
+    };
+    downloadBtn.title = 'Download new models from Hugging Face';
+    header.appendChild(downloadBtn);
   }
 
   // Ensure llama-server is running so there is an active engine.
