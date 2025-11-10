@@ -3,20 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; connect-src 'self' https://p2pcf.minddrop.workers.dev/ ws://localhost:* ws://0.0.0.0:* http://localhost:* http://0.0.0.0:*;">
-    <title>MyDeviceAI - P2PCF Room</title>
+    <title>MyDeviceAI - Desktop</title>
 
   </head>
   <body>
-    <h1>MyDeviceAI - P2PCF Room</h1>
-    <p>Welcome to your Electron application.</p>
+    <div id="app-root" class="md-root md-stack">
+      <!-- 1. MyDeviceAI brand + llama status -->
+      <header class="md-topbar md-stack-section">
+        <div class="md-topbar-left">
+          <div class="md-app-title">MyDeviceAI</div>
+          <div class="md-app-subtitle">Peer-to-peer local AI</div>
+        </div>
+        <div class="md-topbar-right">
+          <div id="llama-status" class="md-pill md-pill-muted">Llama: checking...</div>
+        </div>
+      </header>
 
-    <section>
-      <h2>Current Room</h2>
-      <div>
-        <span>Room ID:</span>
-        <code id="room-id">initializing...</code>
-        <button id="new-room-btn">New Room</button>
-      </div>
-    </section>
+      <!-- 2. Room ID (single room) -->
+      <section class="md-card md-room-card md-stack-section">
+        <div class="md-room-row">
+          <div class="md-room-label">Room ID</div>
+          <code id="room-id" class="md-room-id">initializing...</code>
+        </div>
+        <div class="md-room-actions">
+          <button id="new-room-btn" class="md-btn">New Room</button>
+          <button id="copy-room-btn" class="md-btn md-btn-ghost">Copy ID</button>
+        </div>
+      </section>
+
+      <!-- 3. Connected Peers -->
+      <section class="md-card md-peers-card md-stack-section">
+        <div class="md-section-label">Connected Peers</div>
+        <div id="peer-list" class="md-peer-list"></div>
+      </section>
+    </div>
   </body>
 </html>

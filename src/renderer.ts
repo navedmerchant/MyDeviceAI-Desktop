@@ -60,8 +60,13 @@ function logRendererError(
 }
 
 function generateRandomRoomId(): string {
-  const random = Math.random().toString(36).slice(2, 10);
-  const roomId = `room-${random}`;
+  // Generate a 9-character upper-case alphanumeric ID for easier reading/input.
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let id = '';
+  for (let i = 0; i < 9; i += 1) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  const roomId = id;
   logRenderer('Generated new random room id', { roomId });
   return roomId;
 }
@@ -95,32 +100,34 @@ function updateRoomIdDisplay(roomId: string): void {
 
 function createP2PCFClient(roomId: string): any {
   const clientId = 'client';
-  logRenderer('Creating P2PCF client', { clientId, roomId });
+  uiLog.info('Creating P2PCF client', { clientId, roomId });
   const p2pcf = new P2PCF(clientId, roomId);
 
   p2pcf.on('peerconnect', (peer: any) => {
-    logRenderer('Peer connected', {
+    uiLog.info('Peer connected', {
       id: peer?.id,
       client_id: peer?.client_id,
     });
 
+    addPeerToList(peer);
+
     peer.on('track', (track: any, stream: any) => {
-      logRenderer('Received media track from peer', {
+      uiLog.info('Received media track from peer', {
         peerId: peer?.id,
         clientId: peer?.client_id,
         kind: track?.kind,
       });
     });
 
-    // Example hook: we could expose llama here later, e.g.:
-    // window.llama?.query(`Peer ${peer.client_id} connected`);
+    updateP2PStatus('P2P: connected', 'ok');
   });
 
   p2pcf.on('peerclose', (peer: any) => {
-    logRenderer('Peer disconnected', {
+    uiLog.info('Peer disconnected', {
       id: peer?.id,
       client_id: peer?.client_id,
     });
+    removePeerFromList(peer);
   });
 
   // Minimal binary-safe JSON protocol over P2PCF:
@@ -501,7 +508,7 @@ function createP2PCFClient(roomId: string): any {
   });
 
   // Start polling after listeners are attached
-  logRenderer('Starting P2PCF client');
+  uiLog.info('Starting P2PCF client');
   p2pcf.start();
 
   return p2pcf;
@@ -559,16 +566,178 @@ declare global {
 
 let p2pcf: any | null = null;
 
+/**
+ * DOM helpers and UI wiring
+ */
+
+function q(id: string): HTMLElement | null {
+  return document.getElementById(id);
+}
+
+function setText(id: string, text: string): void {
+  const node = q(id);
+  if (node) node.textContent = text;
+}
+
+function ensureLogContainer(): HTMLElement | null {
+  let c = q('log-output');
+  if (!c) {
+    logRendererError('log-output element missing in DOM');
+    return null;
+  }
+  return c;
+}
+
+function appendLog(
+  msg: string,
+  level: 'info' | 'error' = 'info',
+  tag = 'app',
+): void {
+  const root = ensureLogContainer();
+  if (!root) return;
+
+  const line = document.createElement('div');
+  line.className =
+    'md-log-line' + (level === 'error' ? ' md-log-line-error' : '');
+
+  const tagEl = document.createElement('div');
+  tagEl.className = 'md-log-tag';
+  tagEl.textContent = tag.toUpperCase();
+
+  const msgEl = document.createElement('div');
+  msgEl.className = 'md-log-msg';
+  msgEl.textContent = msg;
+
+  line.appendChild(tagEl);
+  line.appendChild(msgEl);
+
+  root.appendChild(line);
+  root.scrollTop = root.scrollHeight;
+}
+
+// Wrap logger helpers to also feed the UI log stream.
+const uiLog = {
+  info(message: string, extra?: Record<string, unknown>) {
+    logRenderer(message, extra);
+    const suffix =
+      extra && Object.keys(extra).length
+        ? ' ' + JSON.stringify(extra)
+        : '';
+    appendLog(message + suffix, 'info', 'p2p');
+  },
+  error(message: string, error?: unknown, extra?: Record<string, unknown>) {
+    logRendererError(message, error, extra);
+    const payload: any = {
+      ...(extra || {}),
+    };
+    if (error instanceof Error) {
+      payload.error = {
+        name: error.name,
+        message: error.message,
+      };
+    } else if (error) {
+      payload.error = error;
+    }
+    const suffix =
+      Object.keys(payload).length > 0
+        ? ' ' + JSON.stringify(payload)
+        : '';
+    appendLog(message + suffix, 'error', 'err');
+  },
+};
+
+function updateLlamaStatus(text: string, variant: 'muted' | 'ok' | 'warn') {
+  const el = q('llama-status');
+  if (!el) return;
+  el.textContent = text;
+  el.className = `md-pill ${
+    variant === 'ok'
+      ? 'md-pill-ok'
+      : variant === 'warn'
+      ? 'md-pill-warn'
+      : 'md-pill-muted'
+  }`;
+}
+
+function updateP2PStatus(_text: string, _variant: 'muted' | 'ok' | 'warn') {
+  // P2P status indicator removed from UI; this is a no-op to keep callers safe.
+}
+
+function addPeerToList(peer: any) {
+  const list = q('peer-list');
+  if (!list) return;
+  if (list.dataset.empty === '1') {
+    list.textContent = '';
+    delete list.dataset.empty;
+  }
+
+  const id =
+    peer?.client_id || peer?.id || 'peer-' + Math.random().toString(36).slice(2);
+  const safeId = String(id);
+
+  let row = list.querySelector<HTMLElement>(
+    `[data-peer-id="${CSS.escape(safeId)}"]`,
+  );
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'md-peer-item';
+    row.dataset.peerId = safeId;
+
+    const label = document.createElement('div');
+    label.textContent = safeId;
+    label.className = 'md-peer-id';
+
+    const badge = document.createElement('div');
+    badge.className = 'md-pill md-pill-ok';
+    badge.textContent = 'connected';
+
+    row.appendChild(label);
+    row.appendChild(badge);
+    list.appendChild(row);
+  } else {
+    const badge =
+      row.querySelector<HTMLElement>('.md-pill') ||
+      (() => {
+        const b = document.createElement('div');
+        b.className = 'md-pill';
+        row!.appendChild(b);
+        return b;
+      })();
+    badge.className = 'md-pill md-pill-ok';
+    badge.textContent = 'connected';
+  }
+}
+
+function removePeerFromList(peer: any) {
+  const list = q('peer-list');
+  if (!list) return;
+  const safeId = String(peer?.client_id || peer?.id || '');
+  if (!safeId) return;
+
+  const row = list.querySelector<HTMLElement>(
+    `[data-peer-id="${CSS.escape(safeId)}"]`,
+  );
+  if (row) {
+    row.remove();
+  }
+
+  if (!list.children.length) {
+    list.textContent = '';
+    list.classList.remove('md-text-muted');
+    (list as any).dataset.empty = '1';
+  }
+}
+
 function initP2PCFWithCurrentRoom(): void {
   const roomId = getOrCreateRoomId();
   updateRoomIdDisplay(roomId);
 
   if (p2pcf) {
     try {
-      logRenderer('Destroying previous P2PCF instance before re-init');
+      uiLog.info('Destroying previous P2PCF instance before re-init');
       p2pcf.destroy();
     } catch (e) {
-      logRendererError('Error destroying previous P2PCF instance', e as Error);
+      uiLog.error('Error destroying previous P2PCF instance', e as Error);
     }
     p2pcf = null;
   }
@@ -577,21 +746,36 @@ function initP2PCFWithCurrentRoom(): void {
 }
 
 function setupRoomControls(): void {
-  const newRoomButton = document.getElementById('new-room-btn');
+  const newRoomButton = q('new-room-btn');
+  const copyRoomButton = q('copy-room-btn');
+
   if (!newRoomButton) {
-    logRendererError('new-room-btn element not found; room controls disabled');
-    return;
+    uiLog.error('new-room-btn element not found; room controls disabled');
+  } else {
+    newRoomButton.addEventListener('click', () => {
+      const newRoomId = generateRandomRoomId();
+      uiLog.info('User requested new room id', { newRoomId });
+      setRoomId(newRoomId);
+      updateRoomIdDisplay(newRoomId);
+
+      // Re-init P2PCF with new room id
+      initP2PCFWithCurrentRoom();
+    });
   }
 
-  newRoomButton.addEventListener('click', () => {
-    const newRoomId = generateRandomRoomId();
-    logRenderer('User requested new room id', { newRoomId });
-    setRoomId(newRoomId);
-    updateRoomIdDisplay(newRoomId);
-
-    // Re-init P2PCF with new room id
-    initP2PCFWithCurrentRoom();
-  });
+  if (copyRoomButton) {
+    copyRoomButton.addEventListener('click', async () => {
+      const roomIdEl = q('room-id');
+      const value = roomIdEl?.textContent || '';
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        uiLog.info('Room ID copied to clipboard');
+      } catch (err) {
+        uiLog.error('Failed to copy Room ID to clipboard', err as Error);
+      }
+    });
+  }
 }
 
 function parseStartupParams(): URLSearchParams {
@@ -620,17 +804,17 @@ function renderSetupScreen() {
   container.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
 
   const title = document.createElement('h1');
-  title.textContent = 'mydeviceai-desktop setup';
+  title.textContent = 'Welcome to MyDeviceAI Desktop';
   title.style.marginBottom = '8px';
 
   const subtitle = document.createElement('p');
   subtitle.textContent =
-    'We need to download the latest llama.cpp binary for your platform to run models locally.';
+    'The button below will download the right llama.cpp runtime for your platform, a LLM Qwnen3-4b to get you started. This will take about 2.5 gb of space';
 
   const statusLine = document.createElement('div');
   statusLine.id = 'llama-setup-status';
   statusLine.style.margin = '12px 0';
-  statusLine.textContent = 'Ready to download the recommended build.';
+  statusLine.textContent = 'Ready to download.';
 
   const progressBarWrapper = document.createElement('div');
   progressBarWrapper.style.width = '100%';
@@ -836,27 +1020,33 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   // If we reach here, llama is installed (or we fall back to existing behavior).
-  logRenderer('Ensuring managed llama-server is running via preload bridge');
+  uiLog.info('Ensuring managed llama-server is running via preload bridge');
   if (window.llama?.ensureServer) {
     try {
       const status = await window.llama.ensureServer();
       if (status.ok) {
-        logRenderer('Managed llama-server is running', {
+        uiLog.info('Managed llama-server is running', {
           endpoint: status.endpoint,
         });
+        updateLlamaStatus('Llama: ready', 'ok');
       } else {
-        logRendererError('Failed to ensure llama-server', undefined, {
+        uiLog.error('Failed to ensure llama-server', undefined, {
           error: status.error,
         });
+        updateLlamaStatus('Llama: unavailable', 'warn');
       }
     } catch (err: any) {
-      logRendererError('Error while ensuring llama-server', err);
+      uiLog.error('Error while ensuring llama-server', err);
+      updateLlamaStatus('Llama: error', 'warn');
     }
   } else {
-    logRenderer('llama.ensureServer bridge not available; skipping server ensure');
+    uiLog.info(
+      'llama.ensureServer bridge not available; skipping server ensure',
+    );
+    updateLlamaStatus('Llama: bridge missing', 'warn');
   }
 
-  logRenderer('Initializing main P2PCF UI');
+  uiLog.info('Initializing main P2PCF UI');
   initP2PCFWithCurrentRoom();
   setupRoomControls();
 });
