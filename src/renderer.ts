@@ -99,9 +99,9 @@ function updateRoomIdDisplay(roomId: string): void {
 }
 
 function createP2PCFClient(roomId: string): any {
-  const clientId = 'client';
+  const clientId = 'desktop';
   uiLog.info('Creating P2PCF client', { clientId, roomId });
-  const p2pcf = new P2PCF(clientId, roomId);
+  const p2pcf = new P2PCF(clientId, roomId, {workerUrl: 'https://p2pcf.naved-merchant.workers.dev'});
 
   p2pcf.on('peerconnect', (peer: any) => {
     uiLog.info('Peer connected', {

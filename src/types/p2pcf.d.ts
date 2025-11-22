@@ -1,6 +1,6 @@
 declare module 'p2pcf' {
   class P2PCF {
-    constructor(clientId: string, roomId: string);
+    constructor(clientId: string, roomId: string, options?: { workerUrl?: string });
     start(): void;
     on(event: string, callback: (...args: any[]) => void): void;
     broadcast(data: ArrayBuffer): void;
