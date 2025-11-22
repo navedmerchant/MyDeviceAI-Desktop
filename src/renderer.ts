@@ -28,8 +28,8 @@
 
 import './index.css';
 
-// @ts-ignore
-import P2PCF from 'p2pcf';
+import { P2PCF } from './p2pcf/P2PCF';
+import type { Peer } from './p2pcf/types';
 
 const ROOM_ID_STORAGE_KEY = 'p2pcf_room_id';
 const LOG_PREFIX_RENDERER = '[Renderer]';
@@ -98,34 +98,29 @@ function updateRoomIdDisplay(roomId: string): void {
   }
 }
 
-function createP2PCFClient(roomId: string): any {
+function createP2PCFClient(roomId: string): P2PCF {
   const clientId = 'desktop';
   uiLog.info('Creating P2PCF client', { clientId, roomId });
-  const p2pcf = new P2PCF(clientId, roomId, {workerUrl: 'https://p2pcf.naved-merchant.workers.dev'});
+  const p2pcf = new P2PCF(clientId, roomId, {
+    isDesktop: true,
+    workerUrl: 'https://p2pcf.naved-merchant.workers.dev'
+  });
 
-  p2pcf.on('peerconnect', (peer: any) => {
+  p2pcf.on('peerconnect', (peer: Peer) => {
     uiLog.info('Peer connected', {
-      id: peer?.id,
-      client_id: peer?.client_id,
+      id: peer.id,
+      client_id: peer.clientId,
     });
 
     addPeerToList(peer);
 
-    peer.on('track', (track: any, stream: any) => {
-      uiLog.info('Received media track from peer', {
-        peerId: peer?.id,
-        clientId: peer?.client_id,
-        kind: track?.kind,
-      });
-    });
-
     updateP2PStatus('P2P: connected', 'ok');
   });
 
-  p2pcf.on('peerclose', (peer: any) => {
+  p2pcf.on('peerclose', (peer: Peer) => {
     uiLog.info('Peer disconnected', {
-      id: peer?.id,
-      client_id: peer?.client_id,
+      id: peer.id,
+      client_id: peer.clientId,
     });
     removePeerFromList(peer);
   });
@@ -165,10 +160,10 @@ function createP2PCFClient(roomId: string): any {
     | { t: 'error'; id: string; message: string }
     | { t: string; [k: string]: any };
 
-  async function sendJsonSafe(peer: any, msg: P2PMessage): Promise<void> {
+  async function sendJsonSafe(peer: Peer, msg: P2PMessage): Promise<void> {
     try {
       const raw = JSON.stringify(msg);
-      peer.send(raw);
+      p2pcf.send(peer, raw);
     } catch (err) {
       logRendererError('Failed to send P2PCF JSON message', err as Error, {
         msg,
@@ -176,7 +171,7 @@ function createP2PCFClient(roomId: string): any {
     }
   }
 
-  async function handlePromptRequest(peer: any, msg: any): Promise<void> {
+  async function handlePromptRequest(peer: Peer, msg: any): Promise<void> {
     const id = typeof msg.id === 'string' ? msg.id : '';
     const prompt = typeof msg.prompt === 'string' ? msg.prompt : '';
     const maxTokens =
@@ -429,33 +424,14 @@ function createP2PCFClient(roomId: string): any {
     return;
   }
 
-  p2pcf.on('msg', (peer: any, data: any) => {
+  p2pcf.on('msg', (peer: Peer, data: ArrayBuffer) => {
     const meta = {
-      id: peer?.id,
-      client_id: peer?.client_id,
+      id: peer.id,
+      client_id: peer.clientId,
     };
 
     try {
-      const asString =
-        typeof data === 'string'
-          ? data
-          : data instanceof ArrayBuffer
-          ? new TextDecoder().decode(new Uint8Array(data))
-          : ArrayBuffer.isView(data)
-          ? new TextDecoder().decode(
-              data.buffer instanceof ArrayBuffer
-                ? new Uint8Array(data.buffer)
-                : new Uint8Array(data as any),
-            )
-          : null;
-
-      if (!asString) {
-        logRendererError('Received unsupported P2PCF msg payload', undefined, {
-          ...meta,
-          dataType: typeof data,
-        });
-        return;
-      }
+      const asString = new TextDecoder().decode(data);
 
       let msg: P2PMessage;
       try {
@@ -564,7 +540,7 @@ declare global {
   }
 }
 
-let p2pcf: any | null = null;
+let p2pcf: P2PCF | null = null;
 
 /**
  * DOM helpers and UI wiring
@@ -606,7 +582,7 @@ function updateP2PStatus(_text: string, _variant: 'muted' | 'ok' | 'warn') {
   // P2P status indicator removed from UI; this is a no-op to keep callers safe.
 }
 
-function addPeerToList(peer: any) {
+function addPeerToList(peer: Peer) {
   const list = q('peer-list');
   if (!list) return;
   if (list.dataset.empty === '1') {
@@ -614,8 +590,7 @@ function addPeerToList(peer: any) {
     delete list.dataset.empty;
   }
 
-  const id =
-    peer?.client_id || peer?.id || 'peer-' + Math.random().toString(36).slice(2);
+  const id = peer.clientId || peer.id || 'peer-' + Math.random().toString(36).slice(2);
   const safeId = String(id);
 
   let row = list.querySelector<HTMLElement>(
@@ -651,10 +626,10 @@ function addPeerToList(peer: any) {
   }
 }
 
-function removePeerFromList(peer: any) {
+function removePeerFromList(peer: Peer) {
   const list = q('peer-list');
   if (!list) return;
-  const safeId = String(peer?.client_id || peer?.id || '');
+  const safeId = String(peer.clientId || peer.id || '');
   if (!safeId) return;
 
   const row = list.querySelector<HTMLElement>(

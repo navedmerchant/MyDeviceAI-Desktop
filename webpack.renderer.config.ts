@@ -15,5 +15,9 @@ export const rendererConfig: Configuration = {
   plugins,
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css'],
+    fallback: {
+      // Make react-native-webrtc optional for Electron builds
+      'react-native-webrtc': false,
+    },
   },
 };
