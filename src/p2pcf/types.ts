@@ -79,13 +79,14 @@ export interface WorkerPayload {
 }
 
 /**
- * Package sent/received from worker
+ * Package sent to worker (array format expected by worker)
+ * Format: [to, from, type, data]
+ * - to: destination session ID
+ * - from: sender's session ID
+ * - type: 'offer' | 'answer' | 'ice'
+ * - data: SDP or ICE candidate data
  */
-export interface WorkerPackage {
-  to: string; // destination session ID
-  type: 'offer' | 'answer' | 'ice';
-  data: any;
-}
+export type WorkerPackage = [string, string, string, any]; // [to, from, type, data]
 
 /**
  * Worker response

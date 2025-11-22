@@ -103,7 +103,7 @@ function createP2PCFClient(roomId: string): P2PCF {
   uiLog.info('Creating P2PCF client', { clientId, roomId });
   const p2pcf = new P2PCF(clientId, roomId, {
     isDesktop: true,
-    workerUrl: 'https://p2pcf.naved-merchant.workers.dev'
+    workerUrl: 'https://p2pcf.sample.workers.dev'
   });
 
   p2pcf.on('peerconnect', (peer: Peer) => {

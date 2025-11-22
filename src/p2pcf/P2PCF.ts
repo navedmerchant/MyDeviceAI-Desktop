@@ -375,6 +375,12 @@ export class P2PCF extends EventEmitter {
       p: this._pendingPackages,
     };
 
+    // DEBUG: Log outgoing packages
+    if (this._pendingPackages.length > 0) {
+      console.log(`[P2PCF] Sending ${this._pendingPackages.length} packages to worker:`,
+        this._pendingPackages.map(p => `${p[2]} from ${p[1]} -> ${p[0]}`).join(', '));
+    }
+
     // Clear pending packages
     this._pendingPackages = [];
 
@@ -416,6 +422,12 @@ export class P2PCF extends EventEmitter {
     // Store delete key
     if (response.dk) {
       this._deleteKey = response.dk;
+    }
+
+    // DEBUG: Log full worker response
+    console.log(`[P2PCF] Worker response: peers=${response.ps?.length || 0}, packages=${response.pk?.length || 0}`);
+    if (response.pk && response.pk.length > 0) {
+      console.log('[P2PCF] Incoming packages:', JSON.stringify(response.pk));
     }
 
     // Process discovered peers
@@ -468,17 +480,27 @@ export class P2PCF extends EventEmitter {
 
   /**
    * Process incoming packages (ICE/SDP)
+   * Worker returns packages as arrays: [to, from, type, data]
+   * - to: our session ID (recipient)
+   * - from: sender's session ID
+   * - type: 'offer' | 'answer' | 'ice'
+   * - data: SDP or ICE candidate
    */
-  private _processPackages(packages: IncomingPackage[]): void {
+  private _processPackages(packages: any[]): void {
     for (const pkg of packages) {
-      console.log(`[P2PCF] Received ${pkg.type} from ${pkg.from}`);
+      const to = pkg[0]; // Our session ID (recipient)
+      const from = pkg[1]; // Sender's session ID
+      const type = pkg[2] as 'offer' | 'answer' | 'ice';
+      const data = pkg[3];
 
-      if (pkg.type === 'offer') {
-        this._handleOffer(pkg.from, pkg.data);
-      } else if (pkg.type === 'answer') {
-        this._handleAnswer(pkg.from, pkg.data);
-      } else if (pkg.type === 'ice') {
-        this._handleRemoteIceCandidate(pkg.from, pkg.data);
+      console.log(`[P2PCF] Received ${type} from ${from} (to: ${to})`);
+
+      if (type === 'offer') {
+        this._handleOffer(from, data);
+      } else if (type === 'answer') {
+        this._handleAnswer(from, data);
+      } else if (type === 'ice') {
+        this._handleRemoteIceCandidate(from, data);
       }
     }
   }
@@ -746,13 +768,11 @@ export class P2PCF extends EventEmitter {
 
   /**
    * Send package to worker
+   * Format: [to, from, type, data]
    */
   private _sendPackageToWorker(to: string, type: 'offer' | 'answer' | 'ice', data: any): void {
-    this._pendingPackages.push({
-      to,
-      type,
-      data,
-    });
+    console.log(`[P2PCF] Queueing ${type} package to ${to}`);
+    this._pendingPackages.push([to, this._sessionId, type, data]);
   }
 
   // ============================================================================
