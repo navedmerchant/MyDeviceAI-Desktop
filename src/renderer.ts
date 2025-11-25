@@ -103,7 +103,7 @@ function createP2PCFClient(roomId: string): P2PCF {
   uiLog.info('Creating P2PCF client', { clientId, roomId });
   const p2pcf = new P2PCF(clientId, roomId, {
     isDesktop: true,
-    workerUrl: 'https://p2pcf.mindrop.workers.dev'
+    workerUrl: 'https://p2pcf.naved-merchant.workers.dev'
   });
 
   p2pcf.on('peerconnect', (peer: Peer) => {
@@ -128,18 +128,46 @@ function createP2PCFClient(roomId: string): P2PCF {
   // Minimal binary-safe JSON protocol over P2PCF:
   // All control/messages are UTF-8 JSON strings with field "t" (type).
   //
-  // Types:
-  // - "hello": sent by both sides on connect.
+  // Connection flow:
+  // 1. Both sides exchange "hello" on connect
+  // 2. Client -> Server: "version_negotiate" to check compatibility
+  // 3. Server -> Client: "version_ack" with compatibility result
+  // 4. If compatible, client can send "prompt" requests
+  //
+  // Message Types:
+  //
+  // - "hello": bidirectional, sent by both sides on connect
   //     { "t": "hello", "clientId": string, "impl": "mydeviceai-desktop", "version": string }
   //
-  // - "prompt": remote peer -> this app
-  //     { "t": "prompt", "id": string, "prompt": string, "max_tokens"?: number }
+  // - "version_negotiate": Client -> Server, sent after hello to negotiate protocol compatibility
+  //     { "t": "version_negotiate", "protocolVersion": string, "minCompatibleVersion": string }
+  //     protocolVersion: current protocol version (e.g., "1.0.0")
+  //     minCompatibleVersion: oldest version this client can work with (e.g., "1.0.0")
   //
-  // Streaming response from this app -> remote peer:
+  // - "version_ack": Server -> Client, response to version_negotiate
+  //     { "t": "version_ack", "compatible": boolean, "protocolVersion": string, "reason"?: string }
+  //     compatible: true if versions are compatible, false otherwise
+  //     protocolVersion: the protocol version the server is using
+  //     reason: optional explanation if incompatible
+  //
+  // - "prompt": Client -> Server, request to generate completion
+  //     { "t": "prompt", "id": string, "messages": Array<{role: string, content: string}>, "max_tokens"?: number }
+  //     messages: OpenAI-compatible format with roles (system, user, assistant)
+  //     Example: [{"role": "system", "content": "You are helpful"}, {"role": "user", "content": "Hello"}]
+  //
+  // - "get_model": Client -> Server, request to get current active model information
+  //     { "t": "get_model" }
+  //
+  // - "model_info": Server -> Client, response with current model information
+  //     { "t": "model_info", "id": string, "displayName": string, "installed": boolean }
+  //
+  // Streaming response from Server -> Client:
   // - "start": once per prompt before any tokens
   //     { "t": "start", "id": string }
-  // - "token": many per prompt
+  // - "token": many per prompt, content tokens
   //     { "t": "token", "id": string, "tok": string }
+  // - "reasoning_token": reasoning/thinking tokens (optional)
+  //     { "t": "reasoning_token", "id": string, "tok": string }
   // - "end": final success
   //     { "t": "end", "id": string }
   // - "error": final failure
@@ -152,7 +180,11 @@ function createP2PCFClient(roomId: string): P2PCF {
 
   type P2PMessage =
     | { t: 'hello'; clientId: string; impl: string; version: string }
-    | { t: 'prompt'; id: string; prompt: string; max_tokens?: number }
+    | { t: 'version_negotiate'; protocolVersion: string; minCompatibleVersion: string }
+    | { t: 'version_ack'; compatible: boolean; protocolVersion: string; reason?: string }
+    | { t: 'prompt'; id: string; messages: Array<{ role: string; content: string }>; max_tokens?: number }
+    | { t: 'get_model' }
+    | { t: 'model_info'; id: string; displayName: string; installed: boolean }
     | { t: 'start'; id: string }
     | { t: 'token'; id: string; tok: string }
     | { t: 'reasoning_token'; id: string; tok: string }
@@ -171,25 +203,84 @@ function createP2PCFClient(roomId: string): P2PCF {
     }
   }
 
+  async function handleGetModelRequest(peer: Peer): Promise<void> {
+    try {
+      if (!window.modelManager?.getActive) {
+        logRendererError('Model manager API not available in preload bridge');
+        return;
+      }
+
+      const { model } = await window.modelManager.getActive();
+
+      if (model) {
+        await sendJsonSafe(peer, {
+          t: 'model_info',
+          id: model.id,
+          displayName: model.displayName,
+          installed: model.installed,
+        });
+        logRenderer('Sent model_info to peer', {
+          peerId: peer.id,
+          modelId: model.id,
+          displayName: model.displayName,
+        });
+      } else {
+        logRendererError('No active model found');
+      }
+    } catch (err) {
+      logRendererError('Error handling get_model request', err as Error, {
+        peerId: peer.id,
+      });
+    }
+  }
+
   async function handlePromptRequest(peer: Peer, msg: any): Promise<void> {
     const id = typeof msg.id === 'string' ? msg.id : '';
-    const prompt = typeof msg.prompt === 'string' ? msg.prompt : '';
     const maxTokens =
       typeof msg.max_tokens === 'number' && msg.max_tokens > 0
         ? msg.max_tokens
         : 512;
 
-    if (!id || !prompt) {
-      logRendererError('Invalid prompt message; missing id or prompt', undefined, {
+    // Validate messages array
+    if (!Array.isArray(msg.messages)) {
+      logRendererError('Invalid prompt message; messages must be an array', undefined, {
         msg,
       });
       if (id) {
         await sendJsonSafe(peer, {
           t: 'error',
           id,
-          message: 'Invalid prompt: missing prompt text',
+          message: 'Invalid prompt: messages must be an array',
         });
       }
+      return;
+    }
+
+    const messages: Array<{ role: string; content: string }> = msg.messages.filter(
+      (m: any) =>
+        m &&
+        typeof m.role === 'string' &&
+        typeof m.content === 'string'
+    );
+
+    if (!messages.length) {
+      logRendererError('Invalid prompt message; messages array is empty or malformed', undefined, {
+        msg,
+      });
+      if (id) {
+        await sendJsonSafe(peer, {
+          t: 'error',
+          id,
+          message: 'Invalid prompt: messages array is empty or malformed',
+        });
+      }
+      return;
+    }
+
+    if (!id) {
+      logRendererError('Invalid prompt message; missing id', undefined, {
+        msg,
+      });
       return;
     }
 
@@ -208,6 +299,7 @@ function createP2PCFClient(roomId: string): P2PCF {
       logRenderer('Ensuring llama-server before HTTP streaming', {
         id,
         maxTokens,
+        messageCount: messages.length,
       });
 
       const ensure = await window.llama.ensureServer();
@@ -226,12 +318,7 @@ function createP2PCFClient(roomId: string): P2PCF {
         model: 'local-model',
         temperature: 0.7,
         max_tokens: maxTokens,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
+        messages,
         stream: true,
       };
 
@@ -462,14 +549,32 @@ function createP2PCFClient(roomId: string): P2PCF {
           });
           break;
 
+        case 'version_negotiate':
+          logRenderer('Received version_negotiate from peer', {
+            ...meta,
+            protocolVersion: msg.protocolVersion,
+            minCompatibleVersion: msg.minCompatibleVersion,
+          });
+          // Send version_ack response - for now, accept all versions
+          void sendJsonSafe(peer, {
+            t: 'version_ack',
+            compatible: true,
+            protocolVersion: '1.0.0',
+          });
+          break;
+
         case 'prompt':
           logRenderer('Received prompt over P2PCF', {
             ...meta,
             id: msg.id,
-            promptLen:
-              typeof msg.prompt === 'string' ? msg.prompt.length : undefined,
+            messageCount: Array.isArray(msg.messages) ? msg.messages.length : 0,
           });
           void handlePromptRequest(peer, msg);
+          break;
+
+        case 'get_model':
+          logRenderer('Received get_model request from peer', meta);
+          void handleGetModelRequest(peer);
           break;
 
         default:
