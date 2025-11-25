@@ -12,7 +12,6 @@ import type {
   WorkerPackage,
   WorkerResponse,
   PeerData,
-  IncomingPackage,
 } from './types';
 import { generateSessionId, generateUUID } from './utils';
 
@@ -408,11 +407,35 @@ export class P2PCF extends EventEmitter {
       return;
     }
 
-    const url = `${this._workerUrl}?r=${this._roomId}&k=${this._contextId}&dk=${this._deleteKey}`;
+    const payload: WorkerPayload = {
+      r: this._roomId,
+      k: this._contextId,
+      d: [
+        this._sessionId,
+        this._clientId,
+        this._isDesktop,
+        this._dtlsFingerprint,
+        this._startTimestamp,
+        this._reflexiveIPs,
+      ],
+      t: Date.now(),
+      x: 86400,
+      p: [],
+      dk: this._deleteKey,
+    };
 
-    await fetch(url, {
+    const response = await fetch(this._workerUrl, {
       method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      keepalive: true, // Ensure request completes even during page unload
     });
+
+    if (!response.ok) {
+      console.warn(`[P2PCF] Delete request failed: ${response.status}`);
+    }
   }
 
   /**

@@ -76,6 +76,7 @@ export interface WorkerPayload {
   t: number; // timestamp
   x: number; // expiration
   p: WorkerPackage[]; // packages
+  dk?: string; // delete key (used for DELETE requests)
 }
 
 /**
