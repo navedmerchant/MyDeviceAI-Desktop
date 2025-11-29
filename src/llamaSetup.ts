@@ -603,7 +603,11 @@ async function pickAvailablePort(): Promise<number> {
   throw new Error(msg);
 }
 
-async function spawnLlamaServer(binaryPath: string, modelPath: string): Promise<{ port: number }> {
+async function spawnLlamaServer(
+  binaryPath: string,
+  modelPath: string,
+  contextWindow: number = 8192
+): Promise<{ port: number }> {
   if (llamaServerProcess) {
     // If already running, reuse existing port if known.
     if (llamaServerPort) {
@@ -633,7 +637,7 @@ async function spawnLlamaServer(binaryPath: string, modelPath: string): Promise<
     '--model',
     modelPath,
     '--ctx-size',
-    '8192',
+    String(contextWindow),
     '--parallel',
     '4',
   ];
@@ -684,6 +688,7 @@ async function spawnLlamaServer(binaryPath: string, modelPath: string): Promise<
 async function restartLlamaServerOnNewPort(
   binaryPath: string,
   modelPath: string,
+  contextWindow: number = 8192
 ): Promise<{ port: number }> {
   if (llamaServerProcess) {
     try {
@@ -695,7 +700,7 @@ async function restartLlamaServerOnNewPort(
     llamaServerPort = null;
   }
 
-  return spawnLlamaServer(binaryPath, modelPath);
+  return spawnLlamaServer(binaryPath, modelPath, contextWindow);
 }
 
 /**
@@ -723,18 +728,22 @@ export async function ensureLlamaServer(
 
   // Determine which model should be running
   let modelPath: string;
+  let contextWindow: number = 8192; // default
   const activeModel = getActiveModel();
   if (activeModel && activeModel.installed && activeModel.filePath) {
     modelPath = activeModel.filePath;
+    contextWindow = activeModel.currentParams.contextWindow || 8192;
     logDebug('ensureLlamaServer: active model from model manager', {
       modelId: activeModel.id,
       modelPath,
+      contextWindow,
     });
   } else {
     // Fall back to default Qwen3 model
     modelPath = await downloadModelIfNeeded(onProgress);
     logDebug('ensureLlamaServer: no active model found, using default Qwen3', {
       modelPath,
+      contextWindow,
     });
   }
 
@@ -767,7 +776,7 @@ export async function ensureLlamaServer(
 
   // Spawn llama-server with the active model
   try {
-    const { port } = await spawnLlamaServer(install.binaryPath, modelPath);
+    const { port } = await spawnLlamaServer(install.binaryPath, modelPath, contextWindow);
     llamaServerCurrentModelPath = modelPath;
     const endpoint = `http://localhost:${port}`;
     const modelName = activeModel?.displayName || 'Qwen3-4B-Q4_K_M.gguf';
@@ -775,6 +784,7 @@ export async function ensureLlamaServer(
       endpoint,
       modelPath,
       modelName,
+      contextWindow,
     });
     onProgress?.({
       type: 'status',
@@ -785,6 +795,7 @@ export async function ensureLlamaServer(
     const msg = err?.message || String(err);
     logError('ensureLlamaServer: failed to start llama-server', err, {
       modelPath,
+      contextWindow,
     });
     onProgress?.({
       type: 'error',

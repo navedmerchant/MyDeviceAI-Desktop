@@ -247,6 +247,26 @@ contextBridge.exposeInMainWorld('llama', {
       };
     }
   },
+
+  /**
+   * Register a handler to be called when the app is about to quit.
+   * Handler receives a callback to notify when cleanup is complete.
+   * Returns a function to unregister the handler.
+   */
+  onAppBeforeQuit: (handler: (notifyComplete: () => void) => void): (() => void) => {
+    const listener = (_event: any, windowId: number) => {
+      logPreload('app-before-quit event received', { windowId });
+      const notifyComplete = () => {
+        logPreload('Notifying main process of cleanup completion', { windowId });
+        ipcRenderer.send(`p2pcf-cleanup-complete-${windowId}`);
+      };
+      handler(notifyComplete);
+    };
+    ipcRenderer.on('app-before-quit', listener);
+    return () => {
+      ipcRenderer.removeListener('app-before-quit', listener);
+    };
+  },
 });
 
 /**
@@ -342,6 +362,18 @@ contextBridge.exposeInMainWorld('modelManager', {
     return () => {
       ipcRenderer.removeListener('models-download-progress', listener);
     };
+  },
+});
+
+/**
+ * Logger bridge for forwarding renderer logs to main process
+ */
+contextBridge.exposeInMainWorld('logger', {
+  log: (message: string, extra?: Record<string, unknown>) => {
+    ipcRenderer.send('renderer-log', { level: 'log', message, extra });
+  },
+  error: (message: string, extra?: Record<string, unknown>) => {
+    ipcRenderer.send('renderer-log', { level: 'error', message, extra });
   },
 });
 

@@ -115,9 +115,55 @@ app.on('window-all-closed', () => {
 
 // Ensure the managed llama-server is stopped when Electron begins quitting.
 // This guarantees we don't leak the background process.
-app.on('before-quit', () => {
-  logMain('App before-quit: stopping managed llama-server if running');
-  stopLlamaServer();
+let isQuitting = false;
+app.on('before-quit', async (event) => {
+  if (!isQuitting) {
+    event.preventDefault();
+    isQuitting = true;
+
+    logMain('App before-quit: stopping managed llama-server if running');
+    stopLlamaServer();
+
+    // Notify all renderer processes to cleanup P2PCF and wait for them
+    logMain('Notifying renderers to cleanup P2PCF');
+    const windows = BrowserWindow.getAllWindows();
+
+    const cleanupPromises = windows.map((window) => {
+      return new Promise<void>((resolve) => {
+        try {
+          // Set up a one-time listener for cleanup completion
+          ipcMain.once(`p2pcf-cleanup-complete-${window.id}`, () => {
+            logMain(`P2PCF cleanup complete for window ${window.id}`);
+            resolve();
+          });
+
+          // Send cleanup notification with window ID
+          window.webContents.send('app-before-quit', window.id);
+
+          // Fallback timeout in case renderer doesn't respond
+          setTimeout(() => {
+            logMain(`P2PCF cleanup timeout for window ${window.id}`);
+            resolve();
+          }, 3000); // 3 second timeout
+        } catch (err) {
+          logMainError('Failed to send app-before-quit to window', err);
+          resolve();
+        }
+      });
+    });
+
+    // Wait for all cleanups to complete (or timeout)
+    await Promise.all(cleanupPromises);
+    logMain('All P2PCF cleanups complete, waiting 5 seconds before quit to allow DELETE request to complete');
+
+    // Wait 5 seconds to allow P2PCF DELETE request to complete
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    logMain('Timeout complete, quitting app now');
+
+    // Now actually quit
+    app.quit();
+  }
 });
 
 app.on('activate', () => {
@@ -379,5 +425,30 @@ if (!ipcMain.listeners('models-delete').length) {
       });
     }
     return result;
+  });
+}
+
+/**
+ * Renderer logging IPC
+ * - Forward renderer logs to main process console
+ */
+
+if (!ipcMain.listeners('renderer-log').length) {
+  logMain('Registering IPC handler renderer-log');
+  ipcMain.on('renderer-log', (_event, { level, message, extra }) => {
+    const prefix = '[Renderer]';
+    if (level === 'error') {
+      if (extra) {
+        console.error(`${prefix} ${message}`, extra);
+      } else {
+        console.error(`${prefix} ${message}`);
+      }
+    } else {
+      if (extra) {
+        console.log(`${prefix} ${message}`, extra);
+      } else {
+        console.log(`${prefix} ${message}`);
+      }
+    }
   });
 }

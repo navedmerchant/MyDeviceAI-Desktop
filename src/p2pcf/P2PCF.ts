@@ -698,6 +698,13 @@ export class P2PCF extends EventEmitter {
     dc.onopen = () => {
       console.log(`[P2PCF] Data channel open with ${peer.clientId}`);
       this._peers.set(sessionId, peer);
+
+      // Stop polling on mobile once connected to desktop
+      if (!this._isDesktop && peer.isDesktop) {
+        console.log('[P2PCF] Mobile connected to desktop - stopping polling');
+        this._stopPolling();
+      }
+
       this.emit('peerconnect', peer);
     };
 
@@ -754,6 +761,12 @@ export class P2PCF extends EventEmitter {
 
     if (this._desktopPeer?.id === sessionId) {
       this._desktopPeer = null;
+
+      // Resume polling on mobile when desktop disconnects
+      if (!this._isDesktop && !this._isDestroyed) {
+        console.log('[P2PCF] Mobile lost desktop connection - resuming polling');
+        this._startPolling();
+      }
     }
 
     this.emit('peerclose', peer);

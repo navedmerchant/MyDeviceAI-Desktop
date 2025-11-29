@@ -32,15 +32,19 @@ import { P2PCF } from './p2pcf/P2PCF';
 import type { Peer } from './p2pcf/types';
 
 const ROOM_ID_STORAGE_KEY = 'p2pcf_room_id';
-const LOG_PREFIX_RENDERER = '[Renderer]';
 
 function logRenderer(message: string, extra?: Record<string, unknown>): void {
+  // Forward to main process if logger bridge is available
+  if (window.logger?.log) {
+    window.logger.log(message, extra);
+  }
+  // Also log to local console for debugging
   if (extra) {
     // eslint-disable-next-line no-console
-    console.log(`${LOG_PREFIX_RENDERER} ${message}`, extra);
+    console.log(`[Renderer] ${message}`, extra);
   } else {
     // eslint-disable-next-line no-console
-    console.log(`${LOG_PREFIX_RENDERER} ${message}`);
+    console.log(`[Renderer] ${message}`);
   }
 }
 
@@ -49,14 +53,21 @@ function logRendererError(
   error?: unknown,
   extra?: Record<string, unknown>,
 ): void {
-  // eslint-disable-next-line no-console
-  console.error(`${LOG_PREFIX_RENDERER} ${message}`, {
+  const errorData = {
     error:
       error instanceof Error
         ? { name: error.name, message: error.message, stack: error.stack }
         : error,
     ...extra,
-  });
+  };
+
+  // Forward to main process if logger bridge is available
+  if (window.logger?.error) {
+    window.logger.error(message, errorData);
+  }
+  // Also log to local console for debugging
+  // eslint-disable-next-line no-console
+  console.error(`[Renderer] ${message}`, errorData);
 }
 
 function generateRandomRoomId(): string {
@@ -239,7 +250,7 @@ function createP2PCFClient(roomId: string): P2PCF {
     const maxTokens =
       typeof msg.max_tokens === 'number' && msg.max_tokens > 0
         ? msg.max_tokens
-        : 512;
+        : 4096;
 
     // Validate messages array
     if (!Array.isArray(msg.messages)) {
@@ -597,6 +608,11 @@ function createP2PCFClient(roomId: string): P2PCF {
 
 declare global {
   interface Window {
+    logger?: {
+      log: (message: string, extra?: Record<string, unknown>) => void;
+      error: (message: string, extra?: Record<string, unknown>) => void;
+    };
+
     llama?: {
       // Setup / IPC helpers still bridged via preload
       getStatus?: () => Promise<{
@@ -641,6 +657,8 @@ declare global {
         endpoint?: string;
         error?: string;
       }>;
+
+      onAppBeforeQuit?: (handler: (notifyComplete: () => void) => void) => () => void;
     };
   }
 }
@@ -1992,6 +2010,25 @@ function buildDownloadModelsUI() {
   });
 }
 
+// Cleanup P2PCF on window unload
+async function cleanupP2PCF(): Promise<void> {
+  if (p2pcf) {
+    logRenderer('Destroying P2PCF instance');
+    try {
+      await p2pcf.destroy();
+      logRenderer('P2PCF instance destroyed successfully');
+      p2pcf = null;
+    } catch (err) {
+      logRendererError('Error destroying P2PCF', err as Error);
+    }
+  }
+}
+
+window.addEventListener('beforeunload', async () => {
+  logRenderer('Window unloading, cleaning up P2PCF');
+  await cleanupP2PCF();
+});
+
 window.addEventListener('DOMContentLoaded', async () => {
   logRenderer('DOMContentLoaded');
   const params = parseStartupParams();
@@ -2098,4 +2135,24 @@ window.addEventListener('DOMContentLoaded', async () => {
   uiLog.info('Initializing main P2PCF UI');
   initP2PCFWithCurrentRoom();
   setupRoomControls();
+
+  // Register cleanup handler for app quit
+  if (window.llama?.onAppBeforeQuit) {
+    window.llama.onAppBeforeQuit((notifyComplete) => {
+      logRenderer('App is quitting, cleaning up P2PCF via IPC notification');
+      cleanupP2PCF()
+        .then(() => {
+          logRenderer('P2PCF cleanup complete, notifying main process');
+          notifyComplete();
+        })
+        .catch((err) => {
+          logRendererError('Error during P2PCF cleanup', err);
+          // Still notify completion even on error to avoid hanging
+          notifyComplete();
+        });
+    });
+    logRenderer('Registered P2PCF cleanup handler for app-before-quit event');
+  } else {
+    logRenderer('Warning: onAppBeforeQuit not available in preload bridge');
+  }
 });
