@@ -21,8 +21,21 @@ export interface P2PCFOptions {
 
   /**
    * WebRTC configuration (STUN/TURN servers)
+   * @deprecated Use stunIceServers and turnIceServers instead
    */
   rtcConfig?: any; // RTCConfiguration from WebRTC
+
+  /**
+   * STUN servers for direct peer connections
+   * Used when neither peer is behind symmetric NAT
+   */
+  stunIceServers?: any[];
+
+  /**
+   * TURN servers for relay connections
+   * Used when either peer is behind symmetric NAT
+   */
+  turnIceServers?: any[];
 
   /**
    * Polling interval in milliseconds
@@ -72,7 +85,7 @@ export interface P2PCFEvents {
 export interface WorkerPayload {
   r: string; // room ID
   k: string; // context ID
-  d: [string, string, boolean, string, number, string[]]; // peer data
+  d: [string, string, boolean, string, number, string[]]; // peer data: [sessionId, clientId, isSymmetric, dtlsFingerprint, timestamp, reflexiveIPs]
   t: number; // timestamp
   x: number; // expiration
   p: WorkerPackage[]; // packages
@@ -104,7 +117,7 @@ export interface WorkerResponse {
 export interface PeerData {
   0: string; // sessionId
   1: string; // clientId
-  2: boolean; // isDesktop
+  2: boolean; // isSymmetric (symmetric NAT)
   3: string; // dtls fingerprint
   4: number; // timestamp
   5: string[]; // reflexive IPs

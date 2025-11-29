@@ -17,7 +17,8 @@ import { generateSessionId, generateUUID } from './utils';
 
 // Platform detection and WebRTC imports
 const isReactNative =
-  typeof navigator !== 'undefined' && (navigator as any).product === 'ReactNative';
+  typeof navigator !== 'undefined' &&
+  (navigator as any).product === 'ReactNative';
 
 let RTCPeerConnection: any;
 let RTCIceCandidate: any;
@@ -38,14 +39,34 @@ if (isReactNative) {
 }
 
 /**
- * Default RTC configuration with Google STUN servers
+ * Default STUN servers for direct connections
  */
-const DEFAULT_RTC_CONFIG: any = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ],
-};
+const DEFAULT_STUN_ICE: any[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+];
+
+/**
+ * Default TURN servers for relay connections
+ * Used when either peer is behind symmetric NAT
+ */
+const DEFAULT_TURN_ICE: any[] = [
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
 
 /**
  * P2PCF Main Class
@@ -56,7 +77,9 @@ export class P2PCF extends EventEmitter {
   private _roomId: string;
   private _isDesktop: boolean;
   private _workerUrl: string;
-  private _rtcConfig: any; // RTCConfiguration from WebRTC
+  private _rtcConfig: any; // RTCConfiguration from WebRTC (deprecated)
+  private _stunIceServers: any[];
+  private _turnIceServers: any[];
   private _pollingInterval: number;
 
   // Session identifiers
@@ -67,6 +90,7 @@ export class P2PCF extends EventEmitter {
   // Network settings
   private _dtlsFingerprint: string = '';
   private _reflexiveIPs: string[] = [];
+  private _isSymmetric: boolean = false;
   private _startTimestamp: number;
 
   // Peer management
@@ -74,6 +98,7 @@ export class P2PCF extends EventEmitter {
   private _dataChannels: Map<string, any> = new Map(); // sessionId -> RTCDataChannel
   private _peers: Map<string, Peer> = new Map(); // sessionId -> Peer
   private _desktopPeer: Peer | null = null; // For mobile: track desktop
+  private _peerSymmetricStatus: Map<string, boolean> = new Map(); // sessionId -> isSymmetric
 
   // Signaling state
   private _pollingTimer: any = null;
@@ -89,18 +114,39 @@ export class P2PCF extends EventEmitter {
   ) {
     super();
 
+    // IMPORTANT: Desktop clientId must contain "desktop" (case-insensitive)
+    // This convention is used to distinguish desktop from mobile peers
+    // Example: "my-desktop-app", "Desktop-1", "DESKTOP_HUB"
     this._clientId = clientId;
     this._roomId = roomId;
     this._isDesktop = options.isDesktop;
     this._workerUrl = options.workerUrl || '';
-    this._rtcConfig = options.rtcConfig || DEFAULT_RTC_CONFIG;
+
+    // Validate clientId follows desktop naming convention
+    const hasDesktopInName = clientId.toLowerCase().includes('desktop');
+    if (this._isDesktop && !hasDesktopInName) {
+      console.warn(
+        `[P2PCF] WARNING: Desktop peer clientId "${clientId}" should contain "desktop" for proper peer discovery`
+      );
+    } else if (!this._isDesktop && hasDesktopInName) {
+      console.warn(
+        `[P2PCF] WARNING: Mobile peer clientId "${clientId}" should NOT contain "desktop"`
+      );
+    }
+
+    // Support legacy rtcConfig or new STUN/TURN configuration
+    this._rtcConfig = options.rtcConfig;
+    this._stunIceServers = options.stunIceServers || DEFAULT_STUN_ICE;
+    this._turnIceServers = options.turnIceServers || DEFAULT_TURN_ICE;
     this._pollingInterval = options.pollingInterval || 3000;
 
     this._sessionId = generateSessionId();
     this._contextId = generateUUID();
     this._startTimestamp = Date.now();
 
-    console.log(`[P2PCF] Initialized as ${this._isDesktop ? 'DESKTOP' : 'MOBILE'}`);
+    console.log(
+      `[P2PCF] Initialized as ${this._isDesktop ? 'DESKTOP' : 'MOBILE'}`
+    );
     console.log(`[P2PCF] Session: ${this._sessionId}`);
     console.log(`[P2PCF] Client: ${this._clientId}`);
     console.log(`[P2PCF] Room: ${this._roomId}`);
@@ -127,7 +173,10 @@ export class P2PCF extends EventEmitter {
       console.log('[P2PCF] Started successfully');
     } catch (error) {
       console.error('[P2PCF] Failed to start:', error);
-      this.emit('error', error instanceof Error ? error : new Error(String(error)));
+      this.emit(
+        'error',
+        error instanceof Error ? error : new Error(String(error))
+      );
       throw error;
     }
   }
@@ -145,7 +194,8 @@ export class P2PCF extends EventEmitter {
 
     try {
       // Convert string to ArrayBuffer if needed
-      const buffer = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+      const buffer =
+        typeof data === 'string' ? new TextEncoder().encode(data) : data;
       dataChannel.send(buffer);
     } catch (error) {
       console.error(`[P2PCF] Failed to send to ${peer.clientId}:`, error);
@@ -224,10 +274,45 @@ export class P2PCF extends EventEmitter {
 
     this._peers.clear();
     this._desktopPeer = null;
+    this._peerSymmetricStatus.clear();
     this._pendingPackages = [];
     this._pendingIceCandidates.clear();
 
     console.log('[P2PCF] Destroyed');
+  }
+
+  // ============================================================================
+  // ICE SERVER SELECTION
+  // ============================================================================
+
+  /**
+   * Get RTC configuration based on NAT symmetry
+   * Uses TURN servers if either local or remote peer is behind symmetric NAT
+   */
+  private _getRTCConfig(remoteSessionId?: string): any {
+    // If legacy rtcConfig was provided, use it
+    if (this._rtcConfig) {
+      return this._rtcConfig;
+    }
+
+    // Determine if we need TURN servers
+    let needsTurn = this._isSymmetric;
+
+    // If we know the remote peer's symmetric status, check it too
+    if (remoteSessionId) {
+      const remoteIsSymmetric = this._peerSymmetricStatus.get(remoteSessionId);
+      if (remoteIsSymmetric !== undefined) {
+        needsTurn = needsTurn || remoteIsSymmetric;
+      }
+    }
+
+    const iceServers = needsTurn ? this._turnIceServers : this._stunIceServers;
+
+    console.log(
+      `[P2PCF] Using ${needsTurn ? 'TURN' : 'STUN'} servers (local symmetric: ${this._isSymmetric}, remote symmetric: ${this._peerSymmetricStatus.get(remoteSessionId || '') ?? 'unknown'})`
+    );
+
+    return { iceServers };
   }
 
   // ============================================================================
@@ -241,51 +326,48 @@ export class P2PCF extends EventEmitter {
     console.log('[P2PCF] Detecting network settings...');
 
     return new Promise((resolve, reject) => {
-      const pc = new RTCPeerConnection(this._rtcConfig);
+      // Use STUN servers for initial detection (will use TURN for connections later if needed)
+      const pc = new RTCPeerConnection({
+        iceServers: this._stunIceServers,
+      });
       const timeout = setTimeout(() => {
         pc.close();
         reject(new Error('Network detection timeout'));
       }, 10000);
 
+      const candidates: any[] = [];
+
       pc.onicecandidate = (event: any) => {
         if (event.candidate) {
           const candidate = event.candidate;
+          candidates.push(candidate);
 
-          // Extract reflexive IP (srflx)
-          if (candidate.type === 'srflx' && candidate.address) {
-            if (!this._reflexiveIPs.includes(candidate.address)) {
-              this._reflexiveIPs.push(candidate.address);
-              console.log(`[P2PCF] Found reflexive IP: ${candidate.address}`);
-            }
-          }
-
-          // Extract DTLS fingerprint from SDP
+          // Extract DTLS fingerprint from SDP (only need to do once)
           if (!this._dtlsFingerprint && pc.localDescription) {
-            const match = pc.localDescription.sdp.match(/a=fingerprint:sha-256 (.+)/);
+            const match = pc.localDescription.sdp.match(
+              /a=fingerprint:sha-256 (.+)/
+            );
             if (match) {
               // Convert hex fingerprint to base64 (worker expects 44-char base64)
               const hexFingerprint = match[1].replace(/:/g, '');
-              const bytes = new Uint8Array(hexFingerprint.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16)));
+              const bytes = new Uint8Array(
+                hexFingerprint
+                  .match(/.{1,2}/g)!
+                  .map((byte: string) => parseInt(byte, 16))
+              );
               this._dtlsFingerprint = btoa(String.fromCharCode(...bytes));
               console.log(`[P2PCF] DTLS fingerprint: ${this._dtlsFingerprint}`);
             }
           }
-
-          // We have what we need
-          if (this._reflexiveIPs.length > 0 && this._dtlsFingerprint) {
-            clearTimeout(timeout);
-            pc.close();
-            console.log('[P2PCF] Network detection complete');
-            resolve();
-          }
         } else {
-          // null candidate means gathering is complete
-          if (this._dtlsFingerprint) {
-            clearTimeout(timeout);
-            pc.close();
-            console.log('[P2PCF] Network detection complete (no reflexive IP found)');
-            resolve();
-          }
+          // null candidate means gathering is complete - now analyze all candidates
+          clearTimeout(timeout);
+          this._analyzeNetworkSettings(candidates);
+          pc.close();
+          console.log(
+            `[P2PCF] Network detection complete: symmetric=${this._isSymmetric}, reflexive IPs=${this._reflexiveIPs.length}`
+          );
+          resolve();
         }
       };
 
@@ -301,6 +383,70 @@ export class P2PCF extends EventEmitter {
           reject(error);
         });
     });
+  }
+
+  /**
+   * Analyze collected ICE candidates to detect network settings
+   * Determines if NAT is symmetric and collects reflexive IPs
+   */
+  private _analyzeNetworkSettings(candidates: any[]): void {
+    const reflexiveIPs = new Set<string>();
+    const srflxCandidates: Array<{
+      address: string;
+      port: number;
+      relatedPort: number;
+    }> = [];
+
+    // First pass: collect srflx candidates
+    for (const candidate of candidates) {
+      if (candidate.type === 'srflx' && candidate.address) {
+        reflexiveIPs.add(candidate.address);
+        srflxCandidates.push({
+          address: candidate.address,
+          port: candidate.port,
+          relatedPort: candidate.relatedPort || 0,
+        });
+      }
+    }
+
+    // Store reflexive IPs
+    this._reflexiveIPs = Array.from(reflexiveIPs);
+
+    // Symmetric NAT detection:
+    // Network is symmetric if we find two srflx candidates that have:
+    // - Same related port (same local port)
+    // - Different external ports (NAT assigns different ports per destination)
+    // This indicates the NAT is remapping ports based on destination
+    let isSymmetric = false;
+
+    for (let i = 0; i < srflxCandidates.length; i++) {
+      const c1 = srflxCandidates[i];
+      if (!c1) continue;
+
+      for (let j = i + 1; j < srflxCandidates.length; j++) {
+        const c2 = srflxCandidates[j];
+        if (!c2) continue;
+
+        if (
+          c1.relatedPort === c2.relatedPort &&
+          c1.port !== c2.port &&
+          c1.relatedPort !== 0
+        ) {
+          isSymmetric = true;
+          console.log(
+            `[P2PCF] Symmetric NAT detected: same local port ${c1.relatedPort}, different external ports ${c1.port} vs ${c2.port}`
+          );
+          break;
+        }
+      }
+      if (isSymmetric) break;
+    }
+
+    this._isSymmetric = isSymmetric;
+
+    if (this._reflexiveIPs.length > 0) {
+      console.log(`[P2PCF] Reflexive IPs: ${this._reflexiveIPs.join(', ')}`);
+    }
   }
 
   // ============================================================================
@@ -343,7 +489,10 @@ export class P2PCF extends EventEmitter {
       this._handleWorkerResponse(response);
     } catch (error) {
       console.error('[P2PCF] Poll error:', error);
-      this.emit('error', error instanceof Error ? error : new Error(String(error)));
+      this.emit(
+        'error',
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
 
     // Schedule next poll
@@ -364,20 +513,24 @@ export class P2PCF extends EventEmitter {
       d: [
         this._sessionId,
         this._clientId,
-        this._isDesktop,
+        this._isSymmetric,
         this._dtlsFingerprint,
         this._startTimestamp,
         this._reflexiveIPs,
       ],
       t: Date.now(),
-      x: 86400, // 24 hours expiration
+      x: 86400000, // 24 hours in milliseconds
       p: this._pendingPackages,
     };
 
     // DEBUG: Log outgoing packages
     if (this._pendingPackages.length > 0) {
-      console.log(`[P2PCF] Sending ${this._pendingPackages.length} packages to worker:`,
-        this._pendingPackages.map(p => `${p[2]} from ${p[1]} -> ${p[0]}`).join(', '));
+      console.log(
+        `[P2PCF] Sending ${this._pendingPackages.length} packages to worker:`,
+        this._pendingPackages
+          .map((p) => `${p[2]} from ${p[1]} -> ${p[0]}`)
+          .join(', ')
+      );
     }
 
     // Clear pending packages
@@ -413,13 +566,13 @@ export class P2PCF extends EventEmitter {
       d: [
         this._sessionId,
         this._clientId,
-        this._isDesktop,
+        this._isSymmetric,
         this._dtlsFingerprint,
         this._startTimestamp,
         this._reflexiveIPs,
       ],
       t: Date.now(),
-      x: 86400,
+      x: 86400000, // 24 hours in milliseconds
       p: [],
       dk: this._deleteKey,
     };
@@ -448,7 +601,9 @@ export class P2PCF extends EventEmitter {
     }
 
     // DEBUG: Log full worker response
-    console.log(`[P2PCF] Worker response: peers=${response.ps?.length || 0}, packages=${response.pk?.length || 0}`);
+    console.log(
+      `[P2PCF] Worker response: peers=${response.ps?.length || 0}, packages=${response.pk?.length || 0}`
+    );
     if (response.pk && response.pk.length > 0) {
       console.log('[P2PCF] Incoming packages:', JSON.stringify(response.pk));
     }
@@ -466,6 +621,7 @@ export class P2PCF extends EventEmitter {
 
   /**
    * Process discovered peers
+   * Convention: Desktop peers must have "desktop" in their clientId (case-insensitive)
    */
   private _processPeers(peerDataList: PeerData[]): void {
     if (this._isDesktop) {
@@ -473,9 +629,18 @@ export class P2PCF extends EventEmitter {
       for (const peerData of peerDataList) {
         const sessionId = peerData[0];
         const clientId = peerData[1];
-        const isDesktop = peerData[2];
-        if (!isDesktop && !this._peers.has(sessionId)) {
-          console.log(`[P2PCF] Discovered mobile peer: ${clientId} (${sessionId})`);
+        const isSymmetric = peerData[2];
+
+        // Store symmetric NAT status for this peer
+        this._peerSymmetricStatus.set(sessionId, isSymmetric);
+
+        // Filter: only track peers that DON'T have "desktop" in their clientId
+        // (mobile peers will initiate connections to desktop)
+        const isDesktopPeer = clientId.toLowerCase().includes('desktop');
+        if (!isDesktopPeer && !this._peers.has(sessionId)) {
+          console.log(
+            `[P2PCF] Discovered mobile peer: ${clientId} (${sessionId}, symmetric: ${isSymmetric})`
+          );
           // Store peer metadata so it's available when data channel opens
           this._peers.set(sessionId, {
             id: sessionId,
@@ -485,14 +650,21 @@ export class P2PCF extends EventEmitter {
         }
       }
     } else {
-      // Mobile: look for desktop peer
+      // Mobile: look for desktop peer (clientId contains "desktop")
       for (const peerData of peerDataList) {
         const sessionId = peerData[0];
         const clientId = peerData[1];
-        const isDesktop = peerData[2];
+        const isSymmetric = peerData[2];
 
-        if (isDesktop && !this._desktopPeer) {
-          console.log(`[P2PCF] Found desktop peer: ${clientId} (${sessionId})`);
+        // Store symmetric NAT status for this peer
+        this._peerSymmetricStatus.set(sessionId, isSymmetric);
+
+        // Filter: only connect to peer that has "desktop" in clientId
+        const isDesktopPeer = clientId.toLowerCase().includes('desktop');
+        if (isDesktopPeer && !this._desktopPeer) {
+          console.log(
+            `[P2PCF] Found desktop peer: ${clientId} (${sessionId}, symmetric: ${isSymmetric})`
+          );
 
           const peer: Peer = {
             id: sessionId,
@@ -545,8 +717,8 @@ export class P2PCF extends EventEmitter {
     console.log(`[P2PCF] Handling offer from ${sessionId}`);
 
     try {
-      // Create peer connection
-      const pc = new RTCPeerConnection(this._rtcConfig);
+      // Create peer connection with appropriate ICE servers
+      const pc = new RTCPeerConnection(this._getRTCConfig(sessionId));
       this._connections.set(sessionId, pc);
 
       // Setup event handlers
@@ -587,8 +759,8 @@ export class P2PCF extends EventEmitter {
     console.log(`[P2PCF] Connecting to desktop ${peer.clientId}`);
 
     try {
-      // Create peer connection
-      const pc = new RTCPeerConnection(this._rtcConfig);
+      // Create peer connection with appropriate ICE servers
+      const pc = new RTCPeerConnection(this._getRTCConfig(peer.id));
       this._connections.set(peer.id, pc);
 
       // Setup event handlers
@@ -615,7 +787,10 @@ export class P2PCF extends EventEmitter {
   /**
    * Handle incoming answer from desktop (Mobile mode)
    */
-  private async _handleAnswer(sessionId: string, answerData: any): Promise<void> {
+  private async _handleAnswer(
+    sessionId: string,
+    answerData: any
+  ): Promise<void> {
     console.log(`[P2PCF] Handling answer from ${sessionId}`);
 
     try {
@@ -723,7 +898,10 @@ export class P2PCF extends EventEmitter {
         const data = event.data;
         this.emit('msg', peer, data);
       } catch (error) {
-        console.error(`[P2PCF] Error handling message from ${peer.clientId}:`, error);
+        console.error(
+          `[P2PCF] Error handling message from ${peer.clientId}:`,
+          error
+        );
         this.emit('error', error as Error);
       }
     };
@@ -758,13 +936,16 @@ export class P2PCF extends EventEmitter {
     }
 
     this._peers.delete(sessionId);
+    this._peerSymmetricStatus.delete(sessionId);
 
     if (this._desktopPeer?.id === sessionId) {
       this._desktopPeer = null;
 
       // Resume polling on mobile when desktop disconnects
       if (!this._isDesktop && !this._isDestroyed) {
-        console.log('[P2PCF] Mobile lost desktop connection - resuming polling');
+        console.log(
+          '[P2PCF] Mobile lost desktop connection - resuming polling'
+        );
         this._startPolling();
       }
     }
@@ -775,7 +956,10 @@ export class P2PCF extends EventEmitter {
   /**
    * Handle remote ICE candidate
    */
-  private async _handleRemoteIceCandidate(sessionId: string, candidateData: any): Promise<void> {
+  private async _handleRemoteIceCandidate(
+    sessionId: string,
+    candidateData: any
+  ): Promise<void> {
     const pc = this._connections.get(sessionId);
 
     if (!pc) {
@@ -800,7 +984,10 @@ export class P2PCF extends EventEmitter {
       await pc.addIceCandidate(new RTCIceCandidate(candidateData));
       console.log(`[P2PCF] Added remote ICE candidate for ${sessionId}`);
     } catch (error) {
-      console.error(`[P2PCF] Error adding ICE candidate for ${sessionId}:`, error);
+      console.error(
+        `[P2PCF] Error adding ICE candidate for ${sessionId}:`,
+        error
+      );
     }
   }
 
@@ -808,7 +995,11 @@ export class P2PCF extends EventEmitter {
    * Send package to worker
    * Format: [to, from, type, data]
    */
-  private _sendPackageToWorker(to: string, type: 'offer' | 'answer' | 'ice', data: any): void {
+  private _sendPackageToWorker(
+    to: string,
+    type: 'offer' | 'answer' | 'ice',
+    data: any
+  ): void {
     console.log(`[P2PCF] Queueing ${type} package to ${to}`);
     this._pendingPackages.push([to, this._sessionId, type, data]);
   }
