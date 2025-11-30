@@ -136,6 +136,15 @@ function createP2PCFClient(roomId: string): P2PCF {
     removePeerFromList(peer);
   });
 
+  p2pcf.on('error', (error: Error) => {
+    // Log errors but don't crash the app
+    // Many errors are normal (e.g., peer disconnections, network issues)
+    uiLog.error('P2PCF error', error, {
+      message: error.message,
+      name: error.name,
+    });
+  });
+
   // Minimal binary-safe JSON protocol over P2PCF:
   // All control/messages are UTF-8 JSON strings with field "t" (type).
   //

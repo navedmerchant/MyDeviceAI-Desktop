@@ -890,7 +890,9 @@ export class P2PCF extends EventEmitter {
 
     dc.onerror = (error: any) => {
       console.error(`[P2PCF] Data channel error with ${peer.clientId}:`, error);
-      this.emit('error', new Error(`Data channel error: ${error.message}`));
+      // RTCErrorEvent has the actual error nested under the 'error' property
+      const errorMessage = error?.error?.message || error?.message || 'Unknown data channel error';
+      this.emit('error', new Error(`Data channel error: ${errorMessage}`));
     };
 
     dc.onmessage = (event: any) => {
