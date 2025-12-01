@@ -70,23 +70,34 @@ function logRendererError(
   console.error(`[Renderer] ${message}`, errorData);
 }
 
-function generateRandomRoomId(): string {
-  // Generate a 9-character upper-case alphanumeric ID for easier reading/input.
-  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  let id = '';
-  for (let i = 0; i < 9; i += 1) {
-    id += chars.charAt(Math.floor(Math.random() * chars.length));
+async function generateRandomRoomId(): Promise<string> {
+  try {
+    logRenderer('Fetching new room code from API');
+    const response = await fetch('https://mydeviceai-roomcode.naved-merchant.workers.dev/');
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch room code: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    if (!data.success || !data.roomCode) {
+      throw new Error('Invalid response from room code API');
+    }
+
+    const roomId = data.roomCode;
+    logRenderer('Received new room code from API', { roomId });
+    return roomId;
+  } catch (error) {
+    logRendererError('Failed to fetch room code from API, falling back to local generation', error);
+    throw error
   }
-  const roomId = id;
-  logRenderer('Generated new random room id', { roomId });
-  return roomId;
 }
 
-function getOrCreateRoomId(): string {
+async function getOrCreateRoomId(): Promise<string> {
   let roomId = window.localStorage.getItem(ROOM_ID_STORAGE_KEY);
   if (!roomId) {
     logRenderer('No room id in storage, generating one');
-    roomId = generateRandomRoomId();
+    roomId = await generateRandomRoomId();
     window.localStorage.setItem(ROOM_ID_STORAGE_KEY, roomId);
   } else {
     logRenderer('Using existing room id from storage', { roomId });
@@ -668,6 +679,27 @@ declare global {
       }>;
 
       onAppBeforeQuit?: (handler: (notifyComplete: () => void) => void) => () => void;
+
+      getServerStatus?: () => Promise<{
+        running: boolean;
+        port: number | null;
+        modelPath: string | null;
+        modelName: string | null;
+        uptime: number | null;
+      }>;
+    };
+
+    llamaLogs?: {
+      getHistory: () => Promise<Array<{
+        timestamp: number;
+        level: 'info' | 'error';
+        message: string;
+      }>>;
+      onLogEntry: (handler: (entry: {
+        timestamp: number;
+        level: 'info' | 'error';
+        message: string;
+      }) => void) => () => void;
     };
   }
 }
@@ -697,17 +729,8 @@ const uiLog = {
   },
 };
 
-function updateLlamaStatus(text: string, variant: 'muted' | 'ok' | 'warn') {
-  const el = q('llama-status');
-  if (!el) return;
-  el.textContent = text;
-  el.className = `md-pill ${
-    variant === 'ok'
-      ? 'md-pill-ok'
-      : variant === 'warn'
-      ? 'md-pill-warn'
-      : 'md-pill-muted'
-  }`;
+function updateLlamaStatus(_text: string, _variant: 'muted' | 'ok' | 'warn') {
+  // Llama status indicator removed from UI; this is a no-op to keep callers safe.
 }
 
 function updateP2PStatus(_text: string, _variant: 'muted' | 'ok' | 'warn') {
@@ -778,8 +801,8 @@ function removePeerFromList(peer: Peer) {
   }
 }
 
-function initP2PCFWithCurrentRoom(): void {
-  const roomId = getOrCreateRoomId();
+async function initP2PCFWithCurrentRoom(): Promise<void> {
+  const roomId = await getOrCreateRoomId();
   updateRoomIdDisplay(roomId);
 
   if (p2pcf) {
@@ -802,14 +825,14 @@ function setupRoomControls(): void {
   if (!newRoomButton) {
     uiLog.error('new-room-btn element not found; room controls disabled');
   } else {
-    newRoomButton.addEventListener('click', () => {
-      const newRoomId = generateRandomRoomId();
+    newRoomButton.addEventListener('click', async () => {
+      const newRoomId = await generateRandomRoomId();
       uiLog.info('User requested new room id', { newRoomId });
       setRoomId(newRoomId);
       updateRoomIdDisplay(newRoomId);
 
       // Re-init P2PCF with new room id
-      initP2PCFWithCurrentRoom();
+      await initP2PCFWithCurrentRoom();
     });
   }
 
@@ -2038,6 +2061,200 @@ window.addEventListener('beforeunload', async () => {
   await cleanupP2PCF();
 });
 
+/**
+ * Status Bar Component
+ * Displays llama-server status and logs at the bottom of the app
+ */
+class StatusBarComponent {
+  private collapsed: boolean = true;
+  private autoScroll: boolean = true;
+  private logBuffer: Array<{ timestamp: number; level: 'info' | 'error'; message: string }> = [];
+  private elements = {
+    container: null as HTMLElement | null,
+    header: null as HTMLElement | null,
+    statusPill: null as HTMLElement | null,
+    modelName: null as HTMLElement | null,
+    toggle: null as HTMLButtonElement | null,
+    logsArea: null as HTMLElement | null,
+  };
+
+  async init(): Promise<void> {
+    this.cacheElements();
+    this.attachEventListeners();
+    await this.loadHistoricalLogs();
+    this.startRealtimeUpdates();
+    this.startStatusPolling();
+  }
+
+  private cacheElements(): void {
+    this.elements.container = document.getElementById('status-bar');
+    this.elements.header = this.elements.container?.querySelector('.md-status-bar-header') || null;
+    this.elements.statusPill = document.getElementById('status-pill');
+    this.elements.modelName = document.getElementById('status-model');
+    this.elements.toggle = document.getElementById('status-bar-toggle') as HTMLButtonElement;
+    this.elements.logsArea = document.getElementById('status-bar-logs');
+  }
+
+  private attachEventListeners(): void {
+    this.elements.header?.addEventListener('click', () => this.toggle());
+
+    this.elements.logsArea?.addEventListener('scroll', () => {
+      if (!this.elements.logsArea) return;
+      const { scrollTop, scrollHeight, clientHeight } = this.elements.logsArea;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 10;
+      this.autoScroll = isAtBottom;
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !this.collapsed) this.collapse();
+    });
+  }
+
+  private async loadHistoricalLogs(): Promise<void> {
+    if (!window.llamaLogs?.getHistory) return;
+    try {
+      const logs = await window.llamaLogs.getHistory();
+      this.logBuffer = logs;
+      this.renderLogs();
+    } catch (err) {
+      logRendererError('Failed to load historical logs', err as Error);
+    }
+  }
+
+  private startRealtimeUpdates(): void {
+    if (!window.llamaLogs?.onLogEntry) return;
+    window.llamaLogs.onLogEntry((entry) => {
+      this.logBuffer.push(entry);
+      if (this.logBuffer.length > 1000) this.logBuffer.shift();
+      this.appendLogEntry(entry);
+
+      // Check if server is ready based on the "all slots are idle" message
+      // Note: llama-server outputs to stderr, so these appear as 'error' level
+      if (entry.message.includes('all slots are idle')) {
+        this.updateStatusPill('Runtime: ready', 'ok');
+      }
+    });
+  }
+
+  private startStatusPolling(): void {
+    this.updateStatus();
+    setInterval(() => this.updateStatus(), 5000);
+  }
+
+  private async updateStatus(): Promise<void> {
+    if (!window.llama?.getServerStatus) return;
+    try {
+      const status = await window.llama.getServerStatus();
+      if (!status.running) {
+        this.updateStatusPill('Runtime: stopped', 'warn');
+      } else {
+        // Check if we've seen the "all slots are idle" message
+        // Note: llama-server outputs to stderr, so check all entries regardless of level
+        const hasReadyMessage = this.logBuffer.some(
+          entry => entry.message.includes('all slots are idle')
+        );
+
+        if (hasReadyMessage) {
+          this.updateStatusPill('Runtime: ready', 'ok');
+        } else {
+          this.updateStatusPill('Runtime: starting...', 'warn');
+        }
+      }
+      if (this.elements.modelName) {
+        this.elements.modelName.textContent = status.modelName
+          ? `Active: ${status.modelName}`
+          : 'Active: none';
+      }
+    } catch (err) {
+      logRendererError('Failed to update status', err as Error);
+      this.updateStatusPill('Runtime: error', 'warn');
+    }
+  }
+
+  private updateStatusPill(text: string, variant: 'muted' | 'ok' | 'warn'): void {
+    if (!this.elements.statusPill) return;
+    this.elements.statusPill.textContent = text;
+    this.elements.statusPill.className = `md-pill ${
+      variant === 'ok' ? 'md-pill-ok' :
+      variant === 'warn' ? 'md-pill-warn' :
+      'md-pill-muted'
+    }`;
+  }
+
+  toggle(): void {
+    if (this.collapsed) this.expand();
+    else this.collapse();
+  }
+
+  expand(): void {
+    this.collapsed = false;
+    this.elements.container?.classList.remove('md-status-bar-collapsed');
+    this.elements.container?.classList.add('md-status-bar-expanded');
+    this.autoScroll = true;
+    this.scrollToBottom();
+
+    // Hide peers card to make room for logs
+    const peersCard = document.querySelector('.md-peers-card') as HTMLElement;
+    if (peersCard) peersCard.style.display = 'none';
+  }
+
+  collapse(): void {
+    this.collapsed = true;
+    this.elements.container?.classList.remove('md-status-bar-expanded');
+    this.elements.container?.classList.add('md-status-bar-collapsed');
+
+    // Show peers card again
+    const peersCard = document.querySelector('.md-peers-card') as HTMLElement;
+    if (peersCard) peersCard.style.display = '';
+  }
+
+  private renderLogs(): void {
+    if (!this.elements.logsArea) return;
+    this.elements.logsArea.innerHTML = '';
+    this.logBuffer.forEach(entry => this.appendLogEntry(entry, false));
+    this.scrollToBottom();
+  }
+
+  private appendLogEntry(entry: { timestamp: number; level: 'info' | 'error'; message: string }, shouldScroll = true): void {
+    if (!this.elements.logsArea) return;
+
+    const line = document.createElement('div');
+    line.className = `md-status-log-line ${entry.level === 'error' ? 'md-status-log-line-error' : ''}`;
+
+    const time = document.createElement('span');
+    time.className = 'md-status-log-time';
+    time.textContent = new Date(entry.timestamp).toLocaleTimeString();
+
+    const level = document.createElement('span');
+    level.className = `md-status-log-level md-status-log-level-${entry.level}`;
+    level.textContent = entry.level.toUpperCase();
+
+    const msg = document.createElement('span');
+    msg.className = 'md-status-log-msg';
+    msg.textContent = entry.message;
+
+    line.appendChild(time);
+    line.appendChild(level);
+    line.appendChild(msg);
+    this.elements.logsArea.appendChild(line);
+
+    if (shouldScroll && this.autoScroll && !this.collapsed) {
+      this.scrollToBottom();
+    }
+  }
+
+  private scrollToBottom(): void {
+    if (!this.elements.logsArea) return;
+    requestAnimationFrame(() => {
+      if (this.elements.logsArea) {
+        this.elements.logsArea.scrollTop = this.elements.logsArea.scrollHeight;
+      }
+    });
+  }
+}
+
+let statusBar: StatusBarComponent | null = null;
+
 window.addEventListener('DOMContentLoaded', async () => {
   logRenderer('DOMContentLoaded');
   const params = parseStartupParams();
@@ -2068,28 +2285,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   // If installed, expose two separate controls in the top-right:
   // 1. "Models" - for managing/selecting installed models
   // 2. "Download Models" - for searching and downloading from HuggingFace
-  // Update active model display in room section
-  const updateActiveModelDisplay = async () => {
-    const activeModelNameEl = document.getElementById('active-model-name');
-    if (!activeModelNameEl || !window.modelManager?.getActive) return;
-    
-    try {
-      const { model } = await window.modelManager.getActive();
-      if (model) {
-        activeModelNameEl.textContent = model.displayName || model.id;
-        activeModelNameEl.title = `Active model: ${model.displayName || model.id}`;
-      } else {
-        activeModelNameEl.textContent = 'none selected';
-        activeModelNameEl.style.color = 'var(--md-danger)';
-      }
-    } catch (err) {
-      activeModelNameEl.textContent = 'error loading model';
-      activeModelNameEl.style.color = 'var(--md-danger)';
-    }
-  };
-
-  // Initial update
-  void updateActiveModelDisplay();
 
   const header = document.querySelector('.md-topbar-right');
   if (header) {
@@ -2142,7 +2337,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   uiLog.info('Initializing main P2PCF UI');
-  initP2PCFWithCurrentRoom();
+  await initP2PCFWithCurrentRoom();
   setupRoomControls();
 
   // Register cleanup handler for app quit
@@ -2164,4 +2359,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   } else {
     logRenderer('Warning: onAppBeforeQuit not available in preload bridge');
   }
+
+  // Initialize status bar
+  statusBar = new StatusBarComponent();
+  await statusBar.init();
+  logRenderer('Status bar initialized');
 });

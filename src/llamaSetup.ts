@@ -66,10 +66,48 @@ export const MODEL_DIR = path.join(INSTALL_ROOT, 'models');
 export const MODELS_STATE_FILE = path.join(INSTALL_ROOT, 'models.json');
 const QWEN3_MODEL_PATH = path.join(MODEL_DIR, 'Qwen3-4B-Q4_K_M.gguf');
 
+// Log buffer for status bar
+const LOG_BUFFER_SIZE = 1000;
+const llamaLogBuffer: Array<{
+  timestamp: number;
+  level: 'info' | 'error';
+  message: string;
+}> = [];
+
+function addToLogBuffer(level: 'info' | 'error', message: string): void {
+  llamaLogBuffer.push({
+    timestamp: Date.now(),
+    level,
+    message: message.trim(),
+  });
+
+  if (llamaLogBuffer.length > LOG_BUFFER_SIZE) {
+    llamaLogBuffer.shift();
+  }
+
+  // Broadcast to all windows
+  const { BrowserWindow } = require('electron');
+  BrowserWindow.getAllWindows().forEach((window: any) => {
+    window.webContents.send('llama-log-entry', {
+      timestamp: Date.now(),
+      level,
+      message: message.trim(),
+    });
+  });
+}
+
+export function getLlamaLogs(): Array<{
+  timestamp: number;
+  level: 'info' | 'error';
+  message: string;
+}> {
+  return [...llamaLogBuffer];
+}
 
 let llamaServerProcess: import('child_process').ChildProcessWithoutNullStreams | null = null;
 let llamaServerPort: number | null = null;
 let llamaServerCurrentModelPath: string | null = null;
+let llamaServerStartTime: number | null = null;
 
 type Platform = 'windows' | 'linux' | 'macos';
 type Arch = 'x64' | 'arm64';
@@ -655,15 +693,18 @@ async function spawnLlamaServer(
 
   llamaServerProcess = proc;
   llamaServerPort = port;
+  llamaServerStartTime = Date.now();
 
   proc.stdout?.on('data', (data: Buffer) => {
     const text = data.toString();
     logDebug('llama-server stdout', { line: text.trim() });
+    addToLogBuffer('info', text);
   });
 
   proc.stderr?.on('data', (data: Buffer) => {
     const text = data.toString().toLowerCase();
     logError('llama-server stderr', undefined, { line: text.trim() });
+    addToLogBuffer('error', text);
     if (text.includes('address already in use') || text.includes('eaddrinuse')) {
       // Port conflict: attempt to restart on a new port.
       (async () => {
@@ -764,6 +805,8 @@ export async function ensureLlamaServer(
       newModel: modelPath,
     });
     stopLlamaServer();
+    // Clear log buffer so status bar doesn't show stale "ready" status
+    llamaLogBuffer.length = 0;
   }
 
   // Ensure llama binary exists (install once if needed).
@@ -824,9 +867,29 @@ export function stopLlamaServer(): void {
     llamaServerProcess = null;
     llamaServerPort = null;
     llamaServerCurrentModelPath = null;
+    llamaServerStartTime = null;
   }
 }
 
+/**
+ * Get the current status of the llama-server for display in status bar
+ */
+export function getLlamaServerStatus(): {
+  running: boolean;
+  port: number | null;
+  modelPath: string | null;
+  modelName: string | null;
+  uptime: number | null;
+} {
+  const activeModel = getActiveModel();
+  return {
+    running: llamaServerProcess !== null,
+    port: llamaServerPort,
+    modelPath: llamaServerCurrentModelPath,
+    modelName: activeModel?.displayName || null,
+    uptime: llamaServerStartTime ? Date.now() - llamaServerStartTime : null,
+  };
+}
 
 export async function installLatestLlama(
   onProgress?: (p: LlamaSetupProgress) => void,

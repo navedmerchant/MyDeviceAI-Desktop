@@ -14,7 +14,6 @@
           <div class="md-app-subtitle">Access your AI models anywhere</div>
         </div>
         <div class="md-topbar-right">
-          <div id="llama-status" class="md-pill md-pill-muted">Llama: checking...</div>
         </div>
       </header>
 
@@ -23,9 +22,6 @@
         <div class="md-room-row">
           <div class="md-room-label">Room ID</div>
           <code id="room-id" class="md-room-id">initializing...</code>
-        </div>
-        <div id="active-model-display" class="md-active-model-display">
-          Active Model: <span id="active-model-name">loading...</span>
         </div>
         <div class="md-room-actions">
           <button id="new-room-btn" class="md-btn">Regenerate</button>
@@ -38,6 +34,22 @@
        <div class="md-section-label">Connected Peers</div>
        <div id="peer-list" class="md-peer-list" data-empty="1"></div>
      </section>
+
+      <!-- 4. Status Bar -->
+      <section id="status-bar" class="md-status-bar md-status-bar-collapsed md-stack-section">
+        <div class="md-status-bar-header">
+          <div class="md-status-bar-left">
+            <div id="status-pill" class="md-pill md-pill-muted">Runtime: checking...</div>
+            <div id="status-model" class="md-status-model-name">Active: loading...</div>
+          </div>
+          <button id="status-bar-toggle" class="md-status-bar-toggle" aria-label="Toggle logs">
+            <span class="md-status-bar-chevron">▲</span>
+          </button>
+        </div>
+        <div class="md-status-bar-content">
+          <div id="status-bar-logs" class="md-status-bar-logs"></div>
+        </div>
+      </section>
     </div>
   </body>
 </html>

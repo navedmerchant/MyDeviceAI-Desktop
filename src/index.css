@@ -440,3 +440,146 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 253, 0.95);
 }
+
+/* Status Bar Component */
+
+.md-status-bar {
+  display: flex;
+  flex-direction: column-reverse;
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.98), rgba(2, 6, 23, 0.98));
+  border: 1px solid var(--md-border-subtle);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.6);
+  overflow: hidden;
+  transition: height 300ms ease-out, max-height 300ms ease-out;
+}
+
+.md-status-bar-collapsed {
+  height: 48px;
+  max-height: 48px;
+}
+
+.md-status-bar-expanded {
+  height: 500px;
+  max-height: 500px;
+}
+
+/* Hide connected peers section when status bar is expanded */
+.md-status-bar-expanded ~ .md-peers-card {
+  display: none;
+}
+
+.md-status-bar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  min-height: 48px;
+}
+
+.md-status-bar-header:hover {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.md-status-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.md-status-model-name {
+  font-size: 11px;
+  color: var(--md-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.md-status-bar-toggle {
+  background: none;
+  border: none;
+  color: var(--md-text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all var(--md-transition-fast);
+}
+
+.md-status-bar-toggle:hover {
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--md-accent);
+}
+
+.md-status-bar-chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 300ms ease-out;
+}
+
+.md-status-bar-expanded .md-status-bar-chevron {
+  transform: rotate(180deg);
+}
+
+.md-status-bar-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 14px 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.md-status-bar-collapsed .md-status-bar-content {
+  display: none;
+}
+
+.md-status-bar-logs {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 1);
+  border: 1px solid rgba(31, 41, 55, 0.95);
+  font-family: var(--md-font-mono);
+  font-size: 10px;
+  color: var(--md-text-muted);
+  overflow-y: auto;
+  line-height: 1.4;
+}
+
+.md-status-log-line {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.md-status-log-time {
+  color: rgba(148, 163, 253, 0.6);
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+.md-status-log-level {
+  min-width: 50px;
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.md-status-log-level-info {
+  color: var(--md-accent);
+}
+
+.md-status-log-level-error {
+  color: var(--md-danger);
+}
+
+.md-status-log-msg {
+  flex: 1;
+  word-break: break-word;
+}

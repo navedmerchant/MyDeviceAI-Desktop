@@ -5,6 +5,8 @@ import {
   ensureLlamaServer,
   LlamaSetupProgress,
   stopLlamaServer,
+  getLlamaLogs,
+  getLlamaServerStatus,
 } from './llamaSetup';
 import {
   listModels,
@@ -249,6 +251,23 @@ if (!ipcMain.listeners('llama-server-get-endpoint').length) {
       error: (result as { ok: false; error: string }).error,
     });
     return { ok: false, error: (result as { ok: false; error: string }).error };
+  });
+}
+
+// Status bar IPC handlers
+if (!ipcMain.listeners('llama-logs-get-history').length) {
+  logMain('Registering IPC handler llama-logs-get-history');
+  ipcMain.handle('llama-logs-get-history', async () => {
+    logMain('IPC llama-logs-get-history invoked');
+    return getLlamaLogs();
+  });
+}
+
+if (!ipcMain.listeners('llama-server-status').length) {
+  logMain('Registering IPC handler llama-server-status');
+  ipcMain.handle('llama-server-status', async () => {
+    logMain('IPC llama-server-status invoked');
+    return getLlamaServerStatus();
   });
 }
 

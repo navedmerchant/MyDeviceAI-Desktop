@@ -267,6 +267,68 @@ contextBridge.exposeInMainWorld('llama', {
       ipcRenderer.removeListener('app-before-quit', listener);
     };
   },
+
+  /**
+   * Get current llama-server status for status bar
+   */
+  getServerStatus: async (): Promise<{
+    running: boolean;
+    port: number | null;
+    modelPath: string | null;
+    modelName: string | null;
+    uptime: number | null;
+  }> => {
+    logPreload('llama.getServerStatus bridge invoke');
+    try {
+      const result = await ipcRenderer.invoke('llama-server-status');
+      logPreload('llama.getServerStatus bridge result', result as any);
+      return result;
+    } catch (err: any) {
+      logPreloadError('llama-server-status IPC failed', err);
+      return {
+        running: false,
+        port: null,
+        modelPath: null,
+        modelName: null,
+        uptime: null,
+      };
+    }
+  },
+});
+
+/**
+ * Llama logs bridge for status bar
+ */
+contextBridge.exposeInMainWorld('llamaLogs', {
+  getHistory: async (): Promise<Array<{
+    timestamp: number;
+    level: 'info' | 'error';
+    message: string;
+  }>> => {
+    logPreload('llamaLogs.getHistory invoke');
+    try {
+      const result = await ipcRenderer.invoke('llama-logs-get-history');
+      logPreload('llamaLogs.getHistory result', { count: result.length });
+      return result;
+    } catch (err: any) {
+      logPreloadError('llama-logs-get-history IPC failed', err);
+      return [];
+    }
+  },
+
+  onLogEntry: (handler: (entry: {
+    timestamp: number;
+    level: 'info' | 'error';
+    message: string;
+  }) => void): (() => void) => {
+    const listener = (_event: any, entry: any) => {
+      handler(entry);
+    };
+    ipcRenderer.on('llama-log-entry', listener);
+    return () => {
+      ipcRenderer.removeListener('llama-log-entry', listener);
+    };
+  },
 });
 
 /**
