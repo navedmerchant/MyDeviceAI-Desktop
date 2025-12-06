@@ -2121,6 +2121,9 @@ class StatusBarComponent {
     }
   }
 
+  private runtimeReady: boolean = false;
+  private statusPollingInterval: any = null;
+
   private startRealtimeUpdates(): void {
     if (!window.llamaLogs?.onLogEntry) return;
     window.llamaLogs.onLogEntry((entry) => {
@@ -2130,15 +2133,25 @@ class StatusBarComponent {
 
       // Check if server is ready based on the "all slots are idle" message
       // Note: llama-server outputs to stderr, so these appear as 'error' level
-      if (entry.message.includes('all slots are idle')) {
+      if (entry.message.includes('all slots are idle') && !this.runtimeReady) {
+        this.runtimeReady = true;
         this.updateStatusPill('Runtime: ready', 'ok');
+        this.stopStatusPolling();
       }
     });
   }
 
   private startStatusPolling(): void {
     this.updateStatus();
-    setInterval(() => this.updateStatus(), 5000);
+    this.statusPollingInterval = setInterval(() => this.updateStatus(), 5000);
+  }
+
+  private stopStatusPolling(): void {
+    if (this.statusPollingInterval) {
+      clearInterval(this.statusPollingInterval);
+      this.statusPollingInterval = null;
+      logRenderer('Stopped status polling - runtime is ready');
+    }
   }
 
   private async updateStatus(): Promise<void> {
@@ -2154,7 +2167,11 @@ class StatusBarComponent {
           entry => entry.message.includes('all slots are idle')
         );
 
-        if (hasReadyMessage) {
+        if (hasReadyMessage && !this.runtimeReady) {
+          this.runtimeReady = true;
+          this.updateStatusPill('Runtime: ready', 'ok');
+          this.stopStatusPolling();
+        } else if (hasReadyMessage) {
           this.updateStatusPill('Runtime: ready', 'ok');
         } else {
           this.updateStatusPill('Runtime: starting...', 'warn');

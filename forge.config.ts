@@ -22,6 +22,18 @@ const config: ForgeConfig = {
     new MakerRpm({}),
     new MakerDeb({}),
   ],
+  publishers: [
+    {
+      name: '@electron-forge/publisher-github',
+      config: {
+        repository: {
+          owner: 'navedmerchant',
+          name: 'MyDeviceAI-Desktop'
+        },
+        prerelease: false
+      }
+    }
+  ],
   plugins: [
     new AutoUnpackNativesPlugin({}),
     new WebpackPlugin({
