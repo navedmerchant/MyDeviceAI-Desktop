@@ -17,4 +17,7 @@ export const mainConfig: Configuration = {
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css', '.json'],
   },
+  externals: {
+    '@aws-sdk/client-s3': 'commonjs2 @aws-sdk/client-s3',
+  },
 };
