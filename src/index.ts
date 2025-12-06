@@ -75,6 +75,7 @@ const createWindow = async (): Promise<void> => {
   const mainWindow = new BrowserWindow({
     height: 600,
     width: 800,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
     },
@@ -92,8 +93,10 @@ const createWindow = async (): Promise<void> => {
   logMain('Loading main window URL', { url: startUrl });
   mainWindow.loadURL(startUrl);
 
-  // Open the DevTools (optional; comment out in production).
-  mainWindow.webContents.openDevTools();
+  // Open the DevTools only in development mode
+  if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
+    mainWindow.webContents.openDevTools();
+  }
 };
 
 // This method will be called when Electron has finished
@@ -158,7 +161,7 @@ app.on('before-quit', async (event) => {
     await Promise.all(cleanupPromises);
     logMain('All P2PCF cleanups complete, waiting 5 seconds before quit to allow DELETE request to complete');
 
-    // Wait 5 seconds to allow P2PCF DELETE request to complete
+    // Wait 3 seconds to allow P2PCF DELETE request to complete
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
     logMain('Timeout complete, quitting app now');
