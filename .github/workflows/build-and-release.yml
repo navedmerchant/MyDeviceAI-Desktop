@@ -39,6 +39,12 @@ jobs:
         run: Get-ChildItem -Path out -Recurse -File
         shell: pwsh
 
+      - name: Clear extended attributes (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          find out/make -name "*.app" -exec xattr -cr {} \;
+          echo "Cleared extended attributes from .app bundles"
+
       - name: Upload artifacts (Linux)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
