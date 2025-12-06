@@ -53,7 +53,8 @@ export type LlamaSetupProgress =
 
 const OWNER = 'ggml-org';
 const REPO = 'llama.cpp';
-const RELEASES_API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
+const LLAMA_VERSION = 'b7306'; // Pin to specific version
+const RELEASES_API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${LLAMA_VERSION}`;
 
 // Qwen3-4B GGUF (default model)
 const QWEN3_MODEL_URL =
@@ -409,20 +410,44 @@ async function downloadFile(
 
 /**
 * Extract a zip archive into targetDir and resolve when complete.
-* Uses the "unzipper" package in the Electron main process.
+* Uses native unzip on macOS to preserve file permissions and attributes.
+* Uses "unzipper" package on Linux and Windows.
 */
 async function extractZip(assetPath: string, targetDir: string): Promise<void> {
- // eslint-disable-next-line @typescript-eslint/no-var-requires
- const unzipper = require('unzipper') as typeof import('unzipper');
-
  ensureDirSync(targetDir);
  logDebug('Extracting llama.cpp zip archive', { assetPath, targetDir });
+
+ // On macOS, use native unzip to preserve permissions, extended attributes,
+ // and code signing that are critical for dylib files
+ if (process.platform === 'darwin') {
+   // eslint-disable-next-line @typescript-eslint/no-var-requires
+   const { execFile } = require('child_process');
+   // eslint-disable-next-line @typescript-eslint/no-var-requires
+   const { promisify } = require('util');
+   const execFileAsync = promisify(execFile);
+
+   try {
+     // -o: overwrite files without prompting
+     // -q: quiet mode
+     // -d: extract to directory
+     await execFileAsync('unzip', ['-o', '-q', assetPath, '-d', targetDir]);
+     logDebug('Zip extraction completed (native unzip)', { assetPath, targetDir });
+     return;
+   } catch (err) {
+     logError('Native unzip failed, falling back to unzipper', err);
+     // Continue to fallback below
+   }
+ }
+
+ // Use unzipper for Linux/Windows or if native unzip fails on macOS
+ // eslint-disable-next-line @typescript-eslint/no-var-requires
+ const unzipper = require('unzipper') as typeof import('unzipper');
 
  return new Promise<void>((resolve, reject) => {
    const directory = unzipper.Extract({ path: targetDir });
 
    directory.on('close', () => {
-     logDebug('Zip extraction completed', { assetPath, targetDir });
+     logDebug('Zip extraction completed (unzipper)', { assetPath, targetDir });
      resolve();
    });
 
