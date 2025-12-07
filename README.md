@@ -153,9 +153,18 @@ Builds are triggered on git tags matching `v*` pattern.
 
 The application requires a P2P signaling server URL to be configured in `src/Env.ts`.
 
-To set up your own signaling server:
-1. Follow the instructions at [p2pcf-signalling](https://github.com/navedmerchant/p2pcf-signalling)
-2. Deploy to Railway (one-click deployment available)
+**P2P Signaling Server Deployment Options**:
+
+You can deploy the P2P CF signaling server using one of the following methods:
+
+**Option 1: Deploy on Cloudflare Workers**
+1. Use the official P2PCF worker implementation: [p2pcf/worker.js](https://github.com/gfodor/p2pcf/blob/master/src/worker.js)
+2. Deploy to Cloudflare Workers following their deployment guide
+3. Update `src/Env.ts` with your Cloudflare Worker URL
+
+**Option 2: Deploy on Railway**
+1. Use the standalone signaling server: [p2pcf-signalling](https://github.com/navedmerchant/p2pcf-signalling)
+2. Follow the deployment steps in the repository to deploy on Railway
 3. Update `src/Env.ts` with your Railway deployment URL
 
 **Model Parameters** (configurable per model):
