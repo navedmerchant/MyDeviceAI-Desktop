@@ -29,7 +29,10 @@ MyDeviceAI Desktop is a cross-platform Electron application that enables remote 
 #### From Release
 
 Download the latest installer for your platform:
-- **macOS**: `.zip` archive
+- **macOS**: `.zip` archive (ARM/M-series Macs only)
+  - **Important**: After extracting, run `xattr -c mydeviceai-desktop.app` to remove quarantine attributes
+  - Without this step, macOS will report the app as damaged and prevent it from opening
+  - The app will be code-signed in future releases
 - **Linux**: `.deb` package (Ubuntu/Debian)
 - **Windows**: `.exe` installer
 
@@ -55,7 +58,7 @@ npm start
 
 1. Launch the application
 2. The app will automatically download llama.cpp for your platform
-3. Default AI model (Qwen3-4B, ~7GB) will be downloaded
+3. Default AI model (Qwen3-4B, ~2.5GB) will be downloaded
 4. Once setup completes, you'll see your Room ID
 5. Use this Room ID to connect from other devices
 
@@ -174,6 +177,19 @@ The application implements several security measures:
 
 ## Troubleshooting
 
+### macOS: App is damaged and can't be opened
+
+On macOS, you may see an error stating the app is damaged. This occurs due to Gatekeeper quarantine attributes on unsigned apps.
+
+**Solution**:
+```bash
+xattr -c mydeviceai-desktop.app
+```
+
+This removes the quarantine attribute and allows the app to run. Future releases will include proper code signing to eliminate this step.
+
+**Note**: The macOS build is compiled for ARM architecture (Apple Silicon/M-series chips) only. Intel Macs are not currently supported.
+
 ### llama.cpp fails to start
 
 - Check logs in the collapsible "Logs" panel
@@ -203,7 +219,7 @@ Contributions are welcome! Please:
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT
 
 ## Author
 
