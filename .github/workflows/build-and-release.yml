@@ -27,6 +27,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Create Env.ts from secret
+        run: |
+          cat > src/Env.ts << 'EOF'
+          export const ENV = {
+            workerUrl: '${{ secrets.P2PCF_URL }}'
+          };
+          EOF
+        shell: bash
+
       - name: Build application
         run: npm run make
 
