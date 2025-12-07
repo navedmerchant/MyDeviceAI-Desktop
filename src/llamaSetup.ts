@@ -222,9 +222,9 @@ function pickAssetNamePattern(platform: Platform, arch: Arch): (name: string) =>
       }
 
       // Strict: only Ubuntu Vulkan x64 builds:
-      //   llama-b*-bin-ubuntu-vulkan-x64.zip
+      //   llama-b*-bin-ubuntu-vulkan-x64.tar.gz
       if (
-        lower.endsWith('.zip') &&
+        lower.endsWith('.tar.gz') &&
         lower.includes('-ubuntu-vulkan-x64')
       ) {
         return true;
@@ -411,7 +411,8 @@ async function downloadFile(
 /**
 * Extract a zip archive into targetDir and resolve when complete.
 * Uses native unzip on macOS to preserve file permissions and attributes.
-* Uses "unzipper" package on Linux and Windows.
+* Uses "unzipper" package on Windows.
+* Note: Ubuntu uses tar.gz archives, not zip (see extractTarGz function).
 */
 async function extractZip(assetPath: string, targetDir: string): Promise<void> {
  ensureDirSync(targetDir);
@@ -461,6 +462,33 @@ async function extractZip(assetPath: string, targetDir: string): Promise<void> {
 }
 
 /**
+* Extract a tar.gz archive into targetDir using native tar command.
+* This is used for Ubuntu builds which are distributed as .tar.gz files.
+*/
+async function extractTarGz(assetPath: string, targetDir: string): Promise<void> {
+  ensureDirSync(targetDir);
+  logDebug('Extracting llama.cpp tar.gz archive', { assetPath, targetDir });
+
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { execFile } = require('child_process');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { promisify } = require('util');
+  const execFileAsync = promisify(execFile);
+
+  try {
+    // -x: extract
+    // -z: decompress with gzip
+    // -f: file
+    // -C: change to directory
+    await execFileAsync('tar', ['-xzf', assetPath, '-C', targetDir]);
+    logDebug('Tar.gz extraction completed', { assetPath, targetDir });
+  } catch (err) {
+    logError('Tar extraction failed', err);
+    throw new Error(`Failed to extract tar.gz: ${err}`);
+  }
+}
+
+/**
 * Given the downloaded asset and platform, locate the llama-server binary.
 *
 * For the Ubuntu Vulkan x64 asset layout:
@@ -469,6 +497,7 @@ async function extractZip(assetPath: string, targetDir: string): Promise<void> {
 * Behavior:
 * - If asset is a Windows .exe, return as-is.
 * - If asset is a .zip, extract into INSTALL_DIR and search for llama-server.
+* - If asset is a .tar.gz (Ubuntu), extract using tar command and search for llama-server.
 * - Ensure the found binary is marked executable.
 * - Otherwise, fall back to assetPath to match previous behavior.
 */
@@ -487,6 +516,73 @@ async function inferBinaryPathFromAsset(
  if (lower.endsWith('.zip')) {
    const extractRoot = INSTALL_DIR;
    await extractZip(assetPath, extractRoot);
+
+   // Expected: llama-{version}-bin-ubuntu-vulkan-x64/build/bin/llama-server
+   const entries = fs.readdirSync(extractRoot);
+   for (const entry of entries) {
+     const full = path.join(extractRoot, entry);
+     if (!fs.statSync(full).isDirectory()) continue;
+
+     const buildBin = path.join(full, 'build', 'bin');
+     if (fs.existsSync(buildBin) && fs.statSync(buildBin).isDirectory()) {
+       const binEntries = fs.readdirSync(buildBin);
+       for (const be of binEntries) {
+         const candidate = path.join(buildBin, be);
+         const name = be.toLowerCase();
+         if (
+           fs.statSync(candidate).isFile() &&
+           (name === 'llama-server' || name === 'llama-server.exe')
+         ) {
+           try {
+             fs.chmodSync(candidate, 0o755);
+           } catch {
+             // best-effort; ignore chmod failures on non-POSIX
+           }
+           logDebug('Resolved llama-server binary inside archive', {
+             assetPath,
+             candidate,
+           });
+           return candidate;
+         }
+       }
+     }
+   }
+
+   // Fallback: recursive search under extractRoot
+   const stack: string[] = [extractRoot];
+   while (stack.length) {
+     const dir = stack.pop() as string;
+     const children = fs.readdirSync(dir);
+     for (const child of children) {
+       const full = path.join(dir, child);
+       const stat = fs.statSync(full);
+       if (stat.isDirectory()) {
+         stack.push(full);
+       } else if (stat.isFile()) {
+         const name = child.toLowerCase();
+         if (name === 'llama-server' || name === 'llama-server.exe') {
+           try {
+             fs.chmodSync(full, 0o755);
+           } catch {
+             // ignore chmod errors
+           }
+           logDebug('Resolved llama-server binary via recursive search', {
+             assetPath,
+             candidate: full,
+           });
+           return full;
+         }
+       }
+     }
+   }
+
+   throw new Error(`llama-server binary not found in extracted archive: ${assetPath}`);
+ }
+
+ // Tar.gz archives: extract then search for llama-server
+ if (lower.endsWith('.tar.gz')) {
+   const extractRoot = INSTALL_DIR;
+   await extractTarGz(assetPath, extractRoot);
 
    // Expected: llama-{version}-bin-ubuntu-vulkan-x64/build/bin/llama-server
    const entries = fs.readdirSync(extractRoot);
