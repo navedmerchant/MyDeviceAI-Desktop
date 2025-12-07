@@ -50,9 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-distributables
-          path: |
-            out/make/**/*.deb
-            out/make/**/*.rpm
+          path: out/make/**/*.deb
           if-no-files-found: error
 
       - name: Upload artifacts (macOS)

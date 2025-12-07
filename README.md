@@ -4,7 +4,7 @@ Transform your computer into an AI inference hub. Connect from any device via pe
 
 ## Overview
 
-MyDeviceAI Desktop is a cross-platform Electron application that enables remote devices (phones, tablets, other computers) to leverage your desktop's computing power for AI inference. Using WebRTC peer-to-peer connections, devices can send prompts and receive AI-generated responses without relying on cloud services.
+MyDeviceAI Desktop is a cross-platform Electron application that enables remote devices (ios & android via the MyDeviceAI app) to leverage your desktop's computing power for AI inference. Using WebRTC peer-to-peer connections, devices can send prompts and receive AI-generated responses without relying on cloud services.
 
 ### Key Features
 
@@ -30,7 +30,7 @@ MyDeviceAI Desktop is a cross-platform Electron application that enables remote 
 
 Download the latest installer for your platform:
 - **macOS**: `.zip` archive
-- **Linux**: `.deb` or `.rpm` package
+- **Linux**: `.deb` package (Ubuntu/Debian)
 - **Windows**: `.exe` installer
 
 #### From Source
@@ -42,6 +42,10 @@ cd MyDeviceAI-Desktop
 
 # Install dependencies
 npm install
+
+# Create environment configuration
+cp src/Env.example.ts src/Env.ts
+# Edit src/Env.ts with your P2P signaling server URL
 
 # Start development server
 npm start
@@ -134,13 +138,22 @@ npm run publish
 ### Platform-Specific Builds
 
 The CI/CD pipeline automatically builds for:
-- **Linux**: DEB and RPM packages
+- **Linux**: DEB package (Ubuntu/Debian) - uses Ubuntu-compiled llama.cpp
 - **macOS**: ZIP distribution
 - **Windows**: Squirrel installer
 
 Builds are triggered on git tags matching `v*` pattern.
 
 ### Configuration
+
+**Environment Configuration**:
+
+The application requires a P2P signaling server URL to be configured in `src/Env.ts`.
+
+To set up your own signaling server:
+1. Follow the instructions at [p2pcf-signalling](https://github.com/navedmerchant/p2pcf-signalling)
+2. Deploy to Railway (one-click deployment available)
+3. Update `src/Env.ts` with your Railway deployment URL
 
 **Model Parameters** (configurable per model):
 - Temperature

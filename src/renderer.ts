@@ -30,6 +30,7 @@ import './index.css';
 
 import { P2PCF } from './p2pcf/P2PCF';
 import type { Peer } from './p2pcf/types';
+import { ENV } from './Env';
 
 const ROOM_ID_STORAGE_KEY = 'p2pcf_room_id';
 
@@ -125,7 +126,7 @@ function createP2PCFClient(roomId: string): P2PCF {
   uiLog.info('Creating P2PCF client', { clientId, roomId });
   const p2pcf = new P2PCF(clientId, roomId, {
     isDesktop: true,
-    workerUrl: 'https://p2pcf.naved-merchant.workers.dev'
+    workerUrl: ENV.workerUrl
   });
 
   p2pcf.on('peerconnect', (peer: Peer) => {

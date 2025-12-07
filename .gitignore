@@ -90,3 +90,6 @@ typings/
 
 # Electron-Forge
 out/
+
+# Environment configuration
+src/Env.ts
