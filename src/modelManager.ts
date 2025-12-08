@@ -427,9 +427,12 @@ export async function listHfRepoGgufFiles(
       throw new Error('repoId is required');
     }
 
-    const url = `https://huggingface.co/api/models/${encodeURIComponent(
-      trimmed,
-    )}/tree/main`;
+    // Note: repoId should NOT be fully URL-encoded as HF expects the slash unencoded
+    const [owner, repo] = trimmed.split('/');
+    const encodedRepoPath = owner && repo
+      ? `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
+      : encodeURIComponent(trimmed); // fallback for malformed repoId
+    const url = `https://huggingface.co/api/models/${encodedRepoPath}/tree/main`;
 
     const raw = await fetchJson<any[]>(url);
 
@@ -727,9 +730,13 @@ export async function downloadHfModel(
     ensureDirSync(MODEL_DIR);
 
     const id = `${repoId}/${fileName}`;
-    const url = `https://huggingface.co/${encodeURIComponent(
-      repoId,
-    )}/resolve/main/${encodeURIComponent(fileName)}?download=true`;
+    // Note: repoId should NOT be fully URL-encoded as HF expects the slash unencoded
+    // Only encode individual parts of the repo path (owner/repo)
+    const [owner, repo] = repoId.split('/');
+    const encodedRepoPath = owner && repo
+      ? `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
+      : encodeURIComponent(repoId); // fallback for malformed repoId
+    const url = `https://huggingface.co/${encodedRepoPath}/resolve/main/${encodeURIComponent(fileName)}?download=true`;
 
     const destPath = path.join(MODEL_DIR, fileName);
     const tmpPath = destPath + '.download';
