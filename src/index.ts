@@ -128,44 +128,6 @@ app.on('before-quit', async (event) => {
 
     logMain('App before-quit: stopping managed llama-server if running');
     stopLlamaServer();
-
-    // Notify all renderer processes to cleanup P2PCF and wait for them
-    logMain('Notifying renderers to cleanup P2PCF');
-    const windows = BrowserWindow.getAllWindows();
-
-    const cleanupPromises = windows.map((window) => {
-      return new Promise<void>((resolve) => {
-        try {
-          // Set up a one-time listener for cleanup completion
-          ipcMain.once(`p2pcf-cleanup-complete-${window.id}`, () => {
-            logMain(`P2PCF cleanup complete for window ${window.id}`);
-            resolve();
-          });
-
-          // Send cleanup notification with window ID
-          window.webContents.send('app-before-quit', window.id);
-
-          // Fallback timeout in case renderer doesn't respond
-          setTimeout(() => {
-            logMain(`P2PCF cleanup timeout for window ${window.id}`);
-            resolve();
-          }, 3000); // 3 second timeout
-        } catch (err) {
-          logMainError('Failed to send app-before-quit to window', err);
-          resolve();
-        }
-      });
-    });
-
-    // Wait for all cleanups to complete (or timeout)
-    await Promise.all(cleanupPromises);
-    logMain('All P2PCF cleanups complete, waiting 5 seconds before quit to allow DELETE request to complete');
-
-    // Wait 3 seconds to allow P2PCF DELETE request to complete
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    logMain('Timeout complete, quitting app now');
-
     // Now actually quit
     app.quit();
   }

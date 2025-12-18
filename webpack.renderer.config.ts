@@ -18,6 +18,7 @@ export const rendererConfig: Configuration = {
     fallback: {
       // Make react-native-webrtc optional for Electron builds
       'react-native-webrtc': false,
+      '@react-native-async-storage/async-storage': false
     },
   },
 };

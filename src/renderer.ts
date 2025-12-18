@@ -126,7 +126,12 @@ function createP2PCFClient(roomId: string): P2PCF {
   uiLog.info('Creating P2PCF client', { clientId, roomId });
   const p2pcf = new P2PCF(clientId, roomId, {
     isDesktop: true,
-    workerUrl: ENV.workerUrl
+    workerUrl: ENV.workerUrl,
+    stunIceServers: [
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+    ],
   });
 
   p2pcf.on('peerconnect', (peer: Peer) => {

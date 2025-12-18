@@ -14,11 +14,12 @@ import type {
   PeerData,
 } from './types';
 import { generateSessionId, generateUUID } from './utils';
+import { P2PCFStorage } from './storage';
 
 // Platform detection and WebRTC imports
 const isReactNative =
   typeof navigator !== 'undefined' &&
-  (navigator as any).product === 'ReactNative';
+  (navigator as any)?.product === 'ReactNative';
 
 let RTCPeerConnection: any;
 let RTCIceCandidate: any;
@@ -42,6 +43,7 @@ if (isReactNative) {
  * Default STUN servers for direct connections
  */
 const DEFAULT_STUN_ICE: any[] = [
+  { urls: 'stun:stun.cloudflare.com:3478' },
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:global.stun.twilio.com:3478' },
 ];
@@ -141,7 +143,8 @@ export class P2PCF extends EventEmitter {
     this._pollingInterval = options.pollingInterval || 3000;
 
     this._sessionId = generateSessionId();
-    this._contextId = generateUUID();
+    // contextId will be loaded asynchronously in start() - use temporary value for now
+    this._contextId = '';
     this._startTimestamp = Date.now();
 
     console.log(
@@ -164,6 +167,17 @@ export class P2PCF extends EventEmitter {
     console.log('[P2PCF] Starting...');
 
     try {
+      // Load or generate contextId (persisted across app restarts)
+      let contextId = await P2PCFStorage.getContextId();
+      if (!contextId) {
+        contextId = generateUUID();
+        await P2PCFStorage.setContextId(contextId);
+        console.log(`[P2PCF] Generated new context ID: ${contextId}`);
+      } else {
+        console.log(`[P2PCF] Loaded existing context ID: ${contextId}`);
+      }
+      this._contextId = contextId;
+
       // Detect network settings using STUN
       await this._detectNetworkSettings();
 
@@ -230,6 +244,20 @@ export class P2PCF extends EventEmitter {
   }
 
   /**
+   * Check if there is a desktop peer in the room
+   * For mobile: returns true if connected to a desktop peer
+   * For desktop: returns true (desktop is always present - itself)
+   */
+  hasDesktopPeer(): boolean {
+    if (this._isDesktop) {
+      // Desktop peer is always present (itself)
+      return true;
+    }
+    // Mobile: check if we have a desktop peer connection
+    return this._desktopPeer !== null;
+  }
+
+  /**
    * Cleanup and destroy all connections
    */
   async destroy(): Promise<void> {
@@ -279,6 +307,15 @@ export class P2PCF extends EventEmitter {
     this._pendingIceCandidates.clear();
 
     console.log('[P2PCF] Destroyed');
+  }
+
+  /**
+   * Reset the stored context ID (useful for debugging or getting a fresh identity)
+   * This will generate a new context ID on the next start()
+   */
+  static async resetContextId(): Promise<void> {
+    await P2PCFStorage.clearContextId();
+    console.log('[P2PCF] Context ID reset - a new one will be generated on next start');
   }
 
   // ============================================================================
@@ -519,7 +556,7 @@ export class P2PCF extends EventEmitter {
         this._reflexiveIPs,
       ],
       t: Date.now(),
-      x: 86400000, // 24 hours in milliseconds
+      x: 60000, // 1 minute in milliseconds
       p: this._pendingPackages,
     };
 
@@ -572,7 +609,7 @@ export class P2PCF extends EventEmitter {
         this._reflexiveIPs,
       ],
       t: Date.now(),
-      x: 86400000, // 24 hours in milliseconds
+      x: 60000, // 1 minute in milliseconds
       p: [],
       dk: this._deleteKey,
     };
@@ -891,7 +928,8 @@ export class P2PCF extends EventEmitter {
     dc.onerror = (error: any) => {
       console.error(`[P2PCF] Data channel error with ${peer.clientId}:`, error);
       // RTCErrorEvent has the actual error nested under the 'error' property
-      const errorMessage = error?.error?.message || error?.message || 'Unknown data channel error';
+      const errorMessage =
+        error?.error?.message || error?.message || 'Unknown data channel error';
       this.emit('error', new Error(`Data channel error: ${errorMessage}`));
     };
 

@@ -3,8 +3,6 @@
  * Encoding/decoding utilities with zero external dependencies
  */
 
-import { randomUUID } from 'crypto';
-
 /**
  * Convert hex string to Uint8Array
  */
@@ -30,10 +28,11 @@ export function bytesToHex(bytes: Uint8Array): string {
  */
 export function base64ToBytes(base64: string): Uint8Array {
   // Remove padding
-  const base64Clean = base64.replace(/=/g, '');
+  const base64Clean = base64.replace(/[=]/g, '');
 
   // Base64 alphabet
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const chars =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
   // Calculate output size
   const len = base64Clean.length;
@@ -62,13 +61,14 @@ export function base64ToBytes(base64: string): Uint8Array {
  * Convert Uint8Array to base64 string
  */
 export function bytesToBase64(bytes: Uint8Array): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const chars =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   let base64 = '';
 
   for (let i = 0; i < bytes.length; i += 3) {
     const byte1 = bytes[i] ?? 0;
-    const byte2 = i + 1 < bytes.length ? bytes[i + 1] ?? 0 : 0;
-    const byte3 = i + 2 < bytes.length ? bytes[i + 2] ?? 0 : 0;
+    const byte2 = i + 1 < bytes.length ? (bytes[i + 1] ?? 0) : 0;
+    const byte3 = i + 2 < bytes.length ? (bytes[i + 2] ?? 0) : 0;
 
     const enc1 = byte1 >> 2;
     const enc2 = ((byte1 & 3) << 4) | (byte2 >> 4);
